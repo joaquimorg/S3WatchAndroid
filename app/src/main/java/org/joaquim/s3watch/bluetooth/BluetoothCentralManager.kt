@@ -16,6 +16,7 @@ import kotlinx.coroutines.launch
 import org.joaquim.s3watch.ui.device.DeviceConnectionViewModel // For SharedPreferences constants
 import org.joaquim.s3watch.ui.home.HomeViewModel.ConnectionStatus // For the ConnectionStatus enum
 import org.json.JSONObject
+import kotlin.math.min
 import java.text.SimpleDateFormat
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -32,6 +33,7 @@ object BluetoothCentralManager {
     private val NUS_RX_CHARACTERISTIC_UUID = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e") // Receive from S3 (Notify)
     private val NUS_TX_CHARACTERISTIC_UUID = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e") // Send to S3 (Write)
     private val CCC_DESCRIPTOR_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb") // Client Characteristic Configuration Descriptor
+    private const val BLE_MTU = 128
 
     val INSTANCE: BluetoothCentralManager by lazy { this }
 
@@ -41,6 +43,7 @@ object BluetoothCentralManager {
     private var bluetoothGatt: BluetoothGatt? = null
     private var nusTxCharacteristic: BluetoothGattCharacteristic? = null
     private var nusRxCharacteristic: BluetoothGattCharacteristic? = null
+    private val rxBuffer = StringBuilder()
 
     // LiveData exposed to ViewModels
     private val _connectionState = MutableLiveData<ConnectionStatus>(ConnectionStatus.DISCONNECTED)
@@ -153,10 +156,10 @@ object BluetoothCentralManager {
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
             // This is the new way to handle onCharacteristicChanged with Android 13+
             // For older versions, the deprecated onCharacteristicChanged(gatt, characteristic) is used.
-             if (characteristic.uuid == NUS_RX_CHARACTERISTIC_UUID) {
+            if (characteristic.uuid == NUS_RX_CHARACTERISTIC_UUID) {
                 val data = value.toString(Charsets.UTF_8)
                 Log.i(TAG, "Data received on RX: $data")
-                _dataReceived.postValue(data)
+                handleIncomingData(data)
             }
         }
         
@@ -167,7 +170,7 @@ object BluetoothCentralManager {
                 if (characteristic?.uuid == NUS_RX_CHARACTERISTIC_UUID) {
                     val data = characteristic.value?.toString(Charsets.UTF_8) ?: ""
                     Log.i(TAG, "Data received on RX (legacy): $data")
-                    _dataReceived.postValue(data)
+                    handleIncomingData(data)
                 }
             }
         }
@@ -188,6 +191,17 @@ object BluetoothCentralManager {
                     closeGattInternal()
                 }
             }
+        }
+    }
+
+    private fun handleIncomingData(chunk: String) {
+        rxBuffer.append(chunk)
+        var newlineIndex = rxBuffer.indexOf("\n")
+        while (newlineIndex != -1) {
+            val line = rxBuffer.substring(0, newlineIndex).replace("\r", "")
+            _dataReceived.postValue(line)
+            rxBuffer.delete(0, newlineIndex + 1)
+            newlineIndex = rxBuffer.indexOf("\n")
         }
     }
 
@@ -324,15 +338,40 @@ object BluetoothCentralManager {
             return
         }
 
-        nusTxCharacteristic!!.value = jsonData.toByteArray(Charsets.UTF_8)
-        // Consider using WRITE_TYPE_DEFAULT if you need onCharacteristicWrite callback for confirmation
-        nusTxCharacteristic!!.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE 
-        
-        val success = bluetoothGatt!!.writeCharacteristic(nusTxCharacteristic)
-        Log.i(TAG, "Attempting to send JSON via TX: $jsonData. Call success: $success")
-        if (!success) {
-            _lastErrorMessage.postValue("Failed to initiate data send.")
+        val payload = (jsonData + "\r\n").toByteArray(Charsets.UTF_8)
+        var offset = 0
+        while (offset < payload.size) {
+            val end = min(offset + BLE_MTU, payload.size)
+            val chunk = payload.copyOfRange(offset, end)
+            val writeResult = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                bluetoothGatt!!.writeCharacteristic(
+                    nusTxCharacteristic!!,
+                    chunk,
+                    BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                )
+            } else {
+                nusTxCharacteristic!!.value = chunk
+                nusTxCharacteristic!!.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                @Suppress("DEPRECATION")
+                bluetoothGatt!!.writeCharacteristic(nusTxCharacteristic)
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                if (writeResult != BluetoothStatusCodes.SUCCESS) {
+                    Log.e(TAG, "Failed to write chunk: $writeResult")
+                    _lastErrorMessage.postValue("Failed to send data: $writeResult")
+                    return
+                }
+            } else {
+                if (!writeResult) {
+                    Log.e(TAG, "Failed to write chunk (legacy)")
+                    _lastErrorMessage.postValue("Failed to send data.")
+                    return
+                }
+            }
+            offset = end
         }
+        Log.i(TAG, "Sent JSON via TX: $jsonData")
     }
 
     fun disconnect() {
