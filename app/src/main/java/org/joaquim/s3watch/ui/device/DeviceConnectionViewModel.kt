@@ -238,6 +238,7 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
         bluetoothGatt = null
     }
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override fun onCleared() {
         super.onCleared()
         Log.d(TAG, "ViewModel cleared. Disconnecting and closing GATT.")
