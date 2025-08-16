@@ -7,6 +7,7 @@ import android.view.ViewGroup
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import org.joaquim.s3watch.R // Import R for string resources
+import org.joaquim.s3watch.bluetooth.BluetoothCentralManager // Added import
 import org.joaquim.s3watch.databinding.FragmentHomeBinding
 
 class HomeFragment : Fragment() {
@@ -40,18 +41,22 @@ class HomeFragment : Fragment() {
 
         homeViewModel.connectionState.observe(viewLifecycleOwner) { state ->
             val statusString = when(state) {
-                HomeViewModel.ConnectionStatus.CONNECTED -> getString(R.string.status_connected)
-                HomeViewModel.ConnectionStatus.DISCONNECTED -> getString(R.string.status_disconnected)
-                HomeViewModel.ConnectionStatus.CONNECTING -> getString(R.string.status_connecting)
-                HomeViewModel.ConnectionStatus.ERROR -> getString(R.string.status_error)
-                else -> getString(R.string.status_unknown) // Should not happen
+                BluetoothCentralManager.ConnectionStatus.CONNECTED -> getString(R.string.status_connected)
+                BluetoothCentralManager.ConnectionStatus.DISCONNECTED -> getString(R.string.status_disconnected)
+                BluetoothCentralManager.ConnectionStatus.CONNECTING -> getString(R.string.status_connecting)
+                BluetoothCentralManager.ConnectionStatus.ERROR -> getString(R.string.status_error)
+                else -> getString(R.string.status_unknown) // Covers null or any other state
             }
             binding.textConnectionStatus.text = getString(R.string.home_connection_status_prefix, statusString)
         }
 
+        homeViewModel.reconnectButtonText.observe(viewLifecycleOwner) { stringResId ->
+            binding.buttonReconnect.setText(stringResId)
+        }
+
         // Set up button listeners
         binding.buttonReconnect.setOnClickListener {
-            homeViewModel.attemptDeviceReconnect()
+            homeViewModel.handleReconnectButtonClick()
         }
 
         binding.buttonSendDatetime.setOnClickListener {
@@ -61,11 +66,7 @@ class HomeFragment : Fragment() {
         return root
     }
 
-    override fun onResume() {
-        super.onResume()
-        // Refresh the connected device status when the fragment resumes
-        homeViewModel.refreshConnectedDevice()
-    }
+    // onResume no longer needs to call refreshConnectedDevice as ViewModel handles this internally.
 
     override fun onDestroyView() {
         super.onDestroyView()

@@ -14,7 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.joaquim.s3watch.ui.device.DeviceConnectionViewModel // For SharedPreferences constants
-import org.joaquim.s3watch.ui.home.HomeViewModel.ConnectionStatus // For the ConnectionStatus enum
+// Removed: import org.joaquim.s3watch.ui.home.HomeViewModel.ConnectionStatus 
 import org.json.JSONObject
 import kotlin.math.min
 import java.text.SimpleDateFormat
@@ -27,6 +27,14 @@ import java.util.*
 object BluetoothCentralManager {
 
     private const val TAG = "BluetoothCentralManager"
+
+    // Define ConnectionStatus enum here
+    enum class ConnectionStatus {
+        CONNECTED,
+        DISCONNECTED,
+        CONNECTING,
+        ERROR
+    }
 
     // Nordic UART Service (NUS) and characteristics UUIDs
     private val NUS_SERVICE_UUID = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e")
@@ -144,7 +152,8 @@ object BluetoothCentralManager {
         override fun onCharacteristicWrite(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?, status: Int) {
             if (characteristic?.uuid == NUS_TX_CHARACTERISTIC_UUID) {
                 if (status == BluetoothGatt.GATT_SUCCESS) {
-                    Log.i(TAG, "Data sent successfully via TX: ${characteristic.value?.toString(Charsets.UTF_8)}")
+                    val data = characteristic.value?.toString(Charsets.UTF_8) ?: ""
+                    Log.i(TAG, "Data sent successfully via TX : $data")
                     // You could add a LiveData for send status if needed
                 } else {
                     Log.e(TAG, "Failed to write TX characteristic: $status")
@@ -207,7 +216,6 @@ object BluetoothCentralManager {
 
     private fun enableNotifications(characteristic: BluetoothGattCharacteristic) {
         // Check if permissions are granted before calling bluetoothGatt methods
-        // TODO: Implement proper permission checks for BLUETOOTH_CONNECT
         if (applicationContext.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != android.content.pm.PackageManager.PERMISSION_GRANTED && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
              Log.e(TAG, "BLUETOOTH_CONNECT permission not granted.")
             _lastErrorMessage.postValue("BLUETOOTH_CONNECT permission needed.")
@@ -263,7 +271,6 @@ object BluetoothCentralManager {
     }
 
     fun connect(deviceAddress: String, deviceNameHint: String? = null) {
-        // TODO: Implement proper permission checks for BLUETOOTH_CONNECT and BLUETOOTH_SCAN
          if (applicationContext.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != android.content.pm.PackageManager.PERMISSION_GRANTED && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
              Log.e(TAG, "BLUETOOTH_CONNECT permission not granted for connect.")
             _lastErrorMessage.postValue("BLUETOOTH_CONNECT permission needed.")
@@ -325,7 +332,6 @@ object BluetoothCentralManager {
     }
 
     fun sendJson(jsonData: String) {
-        // TODO: Implement proper permission checks for BLUETOOTH_CONNECT
         if (applicationContext.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != android.content.pm.PackageManager.PERMISSION_GRANTED && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
              Log.e(TAG, "BLUETOOTH_CONNECT permission not granted for sendJson.")
             _lastErrorMessage.postValue("BLUETOOTH_CONNECT permission needed.")
@@ -343,27 +349,24 @@ object BluetoothCentralManager {
         while (offset < payload.size) {
             val end = min(offset + BLE_MTU, payload.size)
             val chunk = payload.copyOfRange(offset, end)
-            val writeResult = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                bluetoothGatt!!.writeCharacteristic(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val writeStatus = bluetoothGatt!!.writeCharacteristic(
                     nusTxCharacteristic!!,
                     chunk,
                     BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
                 )
-            } else {
-                nusTxCharacteristic!!.value = chunk
-                nusTxCharacteristic!!.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                @Suppress("DEPRECATION")
-                bluetoothGatt!!.writeCharacteristic(nusTxCharacteristic)
-            }
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                if (writeResult != BluetoothStatusCodes.SUCCESS) {
-                    Log.e(TAG, "Failed to write chunk: $writeResult")
-                    _lastErrorMessage.postValue("Failed to send data: $writeResult")
+                if (writeStatus != BluetoothStatusCodes.SUCCESS) {
+                    Log.e(TAG, "Failed to write chunk: $writeStatus")
+                    _lastErrorMessage.postValue("Failed to send data: $writeStatus")
                     return
                 }
             } else {
-                if (!writeResult) {
+                // nusTxCharacteristic is checked for nullity at the start of the function
+                nusTxCharacteristic!!.value = chunk
+                nusTxCharacteristic!!.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                @Suppress("DEPRECATION")
+                val success = bluetoothGatt!!.writeCharacteristic(nusTxCharacteristic!!) // Use !! for safety, though checked
+                if (!success) {
                     Log.e(TAG, "Failed to write chunk (legacy)")
                     _lastErrorMessage.postValue("Failed to send data.")
                     return
@@ -375,32 +378,54 @@ object BluetoothCentralManager {
     }
 
     fun disconnect() {
-        Log.i(TAG, "Disconnect requested by user.")
-        if (bluetoothGatt != null) {
-             // TODO: Permission check for BLUETOOTH_CONNECT
-            if (applicationContext.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != android.content.pm.PackageManager.PERMISSION_GRANTED && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                Log.e(TAG, "BLUETOOTH_CONNECT permission not granted for disconnect.")
-                 _lastErrorMessage.postValue("BLUETOOTH_CONNECT permission needed to disconnect.")
-                // Still proceed to closeGattInternal to clean up local state.
-            }
-            bluetoothGatt?.disconnect() // This will trigger onConnectionStateChange with STATE_DISCONNECTED
-        } else {
-             closeGattInternal() // Clean up if gatt is null but we want to ensure disconnected state
-            _connectionState.postValue(ConnectionStatus.DISCONNECTED) // Explicitly set if no gatt object to trigger callback
+        Log.i(TAG, "Disconnect requested.")
+        if (applicationContext.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != android.content.pm.PackageManager.PERMISSION_GRANTED && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Log.e(TAG, "BLUETOOTH_CONNECT permission not granted for disconnect.")
+            _lastErrorMessage.postValue("BLUETOOTH_CONNECT permission needed to disconnect.")
+            // Even if permission is denied, we should update our internal state and clean up resources.
+            // The actual BLE disconnect might not happen, but our app state should reflect 'disconnected'.
         }
+        
+        if (bluetoothGatt != null) {
+            bluetoothGatt?.disconnect() // This will trigger onConnectionStateChange with STATE_DISCONNECTED
+                                     // which then calls closeGattInternal().
+        } else {
+            // If gatt is already null, it means we are not connected or already cleaned up.
+            // Ensure state reflects this.
+            closeGattInternal() // Clean up local resources if any were missed.
+            _connectionState.postValue(ConnectionStatus.DISCONNECTED)
+            Log.i(TAG, "No active GATT connection to disconnect, ensuring state is DISCONNECTED.")
+        }
+        // NOTE: Persisted device info (name and address in SharedPreferences) is NOT cleared here.
+        // _connectedDeviceName LiveData also retains its last value.
+        // This allows the UI to still show the last connected device for easy reconnection.
     }
 
     private fun closeGattInternal() {
         Log.d(TAG, "Closing GATT internal resources.")
-         // TODO: Permission check for BLUETOOTH_CONNECT
         if (applicationContext.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != android.content.pm.PackageManager.PERMISSION_GRANTED && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             Log.w(TAG, "BLUETOOTH_CONNECT permission not granted, but closing GATT locally.")
+            // We can still try to close, but it might not fully work without permission.
+            // The important part is cleaning up our reference.
         }
-        bluetoothGatt?.close()
+        try {
+            bluetoothGatt?.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing BluetoothGatt: ${e.message}")
+        }
         bluetoothGatt = null
         nusTxCharacteristic = null
         nusRxCharacteristic = null
-        // Do not change _connectionState here directly to DISCONNECTED unless it's a forced cleanup
-        // The onConnectionStateChange callback should primarily handle state transitions.
+        // _connectionState is typically updated by onConnectionStateChange.
+        // If closeGattInternal is called outside that flow (e.g., forced cleanup),
+        // ensure the state is consistent.
+        if (_connectionState.value != ConnectionStatus.DISCONNECTED && _connectionState.value != ConnectionStatus.ERROR) {
+             // If we are closing internally and not already in a disconnected or error state,
+             // then something is forcing a closure, so update state.
+            // However, this might conflict if onConnectionStateChange is about to be called.
+            // For now, let onConnectionStateChange be the primary driver for state.
+            // Log.d(TAG, "closeGattInternal: State was ${_connectionState.value}, forcing to DISCONNECTED if not ERROR")
+            // if (_connectionState.value != ConnectionStatus.ERROR) _connectionState.postValue(ConnectionStatus.DISCONNECTED)
+        }
     }
 }
