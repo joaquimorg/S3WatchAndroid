@@ -34,8 +34,10 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
         const val KEY_CONNECTED_DEVICE_ADDRESS = "connected_device_address"
 
         private const val NORDIC_UART_SERVICE_UUID_STRING = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
-        private const val NORDIC_UART_RX_CHARACTERISTIC_UUID_STRING = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E" // App receives on this (ESP32 TX)
-        private const val NORDIC_UART_TX_CHARACTERISTIC_UUID_STRING = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E" // App sends on this (ESP32 RX)
+        // NUS characteristic where the app **receives** data from the ESP32 (ESP32 TX)
+        private const val NORDIC_UART_RX_CHARACTERISTIC_UUID_STRING = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+        // NUS characteristic where the app **sends** data to the ESP32 (ESP32 RX)
+        private const val NORDIC_UART_TX_CHARACTERISTIC_UUID_STRING = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 
         val NORDIC_UART_SERVICE_UUID: UUID = UUID.fromString(NORDIC_UART_SERVICE_UUID_STRING)
         val NORDIC_UART_RX_CHARACTERISTIC_UUID: UUID = UUID.fromString(NORDIC_UART_RX_CHARACTERISTIC_UUID_STRING)
