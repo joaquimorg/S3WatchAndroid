@@ -106,7 +106,7 @@ class DeviceConnectionFragment : Fragment() {
         }
 
         viewModel.isScanning.observe(viewLifecycleOwner) { isScanning ->
-            binding.scanButton.text = if (isScanning) "Parar Scan" else "Buscar Dispositivos"
+            binding.scanButton.text = if (isScanning) getString(R.string.stop_scan) else getString(R.string.scan_devices)
             //binding.progressBar.visibility = if (isScanning) View.VISIBLE else View.GONE
         }
 

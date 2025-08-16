@@ -3,112 +3,147 @@ package org.joaquim.s3watch.ui.device
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Application
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
-import android.bluetooth.BluetoothManager
-import android.bluetooth.BluetoothProfile
+import android.bluetooth.*
 import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
-import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.ParcelUuid
 import android.util.Log
-import androidx.annotation.RequiresPermission
+import androidx.core.app.ActivityCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.application
+import org.joaquim.s3watch.R
 import org.joaquim.s3watch.utils.SingleLiveEvent
+import org.json.JSONObject
+import java.time.LocalDateTime
+import java.util.*
 
 class DeviceConnectionViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
-        private const val TAG = "DeviceConnectionVM"
-        private const val NORDIC_UART_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+        private val TAG = DeviceConnectionViewModel::class.java.simpleName
         const val PREFS_NAME = "S3WatchPrefs"
-        const val KEY_CONNECTED_DEVICE_ADDRESS = "connected_device_mac"
+        const val KEY_CONNECTED_DEVICE_ADDRESS = "connected_device_address"
+
+        private const val NORDIC_UART_SERVICE_UUID_STRING = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+        private const val NORDIC_UART_RX_CHARACTERISTIC_UUID_STRING = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E" // App receives on this (ESP32 TX)
+        private const val NORDIC_UART_TX_CHARACTERISTIC_UUID_STRING = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E" // App sends on this (ESP32 RX)
+
+        val NORDIC_UART_SERVICE_UUID: UUID = UUID.fromString(NORDIC_UART_SERVICE_UUID_STRING)
+        val NORDIC_UART_RX_CHARACTERISTIC_UUID: UUID = UUID.fromString(NORDIC_UART_RX_CHARACTERISTIC_UUID_STRING)
+        val NORDIC_UART_TX_CHARACTERISTIC_UUID: UUID = UUID.fromString(NORDIC_UART_TX_CHARACTERISTIC_UUID_STRING)
+
+        val CLIENT_CHARACTERISTIC_CONFIG_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+        private const val SCAN_PERIOD: Long = 10000 // Stops scanning after 10 seconds.
     }
 
-    private val bluetoothAdapter: BluetoothAdapter? by lazy {
-        (application.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+    private val bluetoothAdapter: BluetoothAdapter? by lazy(LazyThreadSafetyMode.NONE) {
+        val bluetoothManager = application.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        bluetoothManager.adapter
     }
-    private val bluetoothLeScanner by lazy { bluetoothAdapter?.bluetoothLeScanner }
-
-    private var bluetoothGatt: BluetoothGatt? = null
 
     private val _discoveredDevices = MutableLiveData<MutableList<BluetoothDevice>>(mutableListOf())
-    val discoveredDevices: LiveData<List<BluetoothDevice>> get() = _discoveredDevices as LiveData<List<BluetoothDevice>>
+    val discoveredDevices: LiveData<MutableList<BluetoothDevice>> = _discoveredDevices
 
     private val _isScanning = MutableLiveData(false)
     val isScanning: LiveData<Boolean> = _isScanning
 
-    private val _connectionStatus = MutableLiveData<String?>()
-    val connectionStatus: LiveData<String?> = _connectionStatus
+    private val _connectionStatus = MutableLiveData<String>()
+    val connectionStatus: LiveData<String> = _connectionStatus
 
     private val _navigateToHome = SingleLiveEvent<Unit>()
     val navigateToHome: LiveData<Unit> = _navigateToHome
 
-    private val sharedPreferences: SharedPreferences = 
-        application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private var bluetoothGatt: BluetoothGatt? = null
+    private var nusTxCharacteristic: BluetoothGattCharacteristic? = null
+    private var nusRxCharacteristic: BluetoothGattCharacteristic? = null
 
-    init {
-        // Poderia carregar o endereço aqui se quiséssemos tentar uma reconexão automática, por exemplo.
-        // val connectedDeviceAddress = sharedPreferences.getString(KEY_CONNECTED_DEVICE_ADDRESS, null)
-        // Log.d(TAG, "Last connected device address: $connectedDeviceAddress")
-    }
+    private val handler = Handler(Looper.getMainLooper())
 
-    @SuppressLint("MissingPermission") // Permissions are checked in the Fragment
+    private val sharedPreferences = application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+
+    @SuppressLint("MissingPermission")
     fun startScan() {
-        if (_isScanning.value == true) {
-            Log.d(TAG, "Scan already in progress.")
+        if (!hasPermission(Manifest.permission.BLUETOOTH_SCAN)) {
+            _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_scan_permission_error))
+            Log.w(TAG, "BLUETOOTH_SCAN permission not granted for startScan")
+            _isScanning.postValue(false)
             return
         }
 
+        if (bluetoothAdapter == null || !bluetoothAdapter!!.isEnabled) {
+            _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_ble_scanner_not_available))
+            Log.w(TAG, "BluetoothAdapter not available or not enabled.")
+            _isScanning.postValue(false)
+            return
+        }
+
+        val bluetoothLeScanner = bluetoothAdapter?.bluetoothLeScanner
         if (bluetoothLeScanner == null) {
-            Log.e(TAG, "Bluetooth LE Scanner not available.")
-            _connectionStatus.postValue("Scanner BLE não disponível.")
+            _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_ble_scanner_not_available))
+            Log.w(TAG, "BluetoothLeScanner not available.")
+            _isScanning.postValue(false)
             return
         }
 
         _discoveredDevices.value?.clear()
         _discoveredDevices.postValue(_discoveredDevices.value ?: mutableListOf())
         _isScanning.postValue(true)
-        _connectionStatus.postValue("Buscando dispositivos...")
+        _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_scanning_devices))
 
         val scanSettings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
-        // Filtro (descomente e ajuste se necessário)
-        // val filters: MutableList<ScanFilter> = ArrayList()
-        // val serviceUuid = ParcelUuid.fromString(NORDIC_UART_SERVICE_UUID)
-        // val nordicUartFilter = ScanFilter.Builder().setServiceUuid(serviceUuid).build()
-        // filters.add(nordicUartFilter)
+        val filters: MutableList<ScanFilter> = ArrayList()
+        val serviceUuid = ParcelUuid.fromString(NORDIC_UART_SERVICE_UUID_STRING)
+        val nordicUartFilter = ScanFilter.Builder().setServiceUuid(serviceUuid).build()
+        filters.add(nordicUartFilter)
 
-        Log.d(TAG, "Starting BLE scan...")
+        Log.d(TAG, "Starting BLE scan with Nordic UART filter...")
+        handler.postDelayed({
+            if (_isScanning.value == true) {
+                stopScan()
+            }
+        }, SCAN_PERIOD)
+
         try {
-            bluetoothLeScanner?.startScan(null, scanSettings, leScanCallback) // Usando null para filtros por enquanto
+            bluetoothLeScanner.startScan(filters, scanSettings, leScanCallback)
         } catch (e: SecurityException) {
             Log.e(TAG, "SecurityException during startScan: ${e.message}")
-            _connectionStatus.postValue("Erro de permissão ao iniciar o scan.")
+            _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_scan_permission_error))
             _isScanning.postValue(false)
         }
     }
 
-    @SuppressLint("MissingPermission") // Permissions are checked in the Fragment
+    @SuppressLint("MissingPermission")
     fun stopScan() {
-        if (_isScanning.value == false) {
-            Log.d(TAG, "Scan not in progress or already stopped.")
+        if (!hasPermission(Manifest.permission.BLUETOOTH_SCAN)) {
+            _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_stop_scan_permission_error))
+            Log.w(TAG, "BLUETOOTH_SCAN permission not granted for stopScan")
             return
         }
+        val bluetoothLeScanner = bluetoothAdapter?.bluetoothLeScanner
+        if (bluetoothLeScanner == null || _isScanning.value == false) {
+            Log.w(TAG, "stopScan called but scanner not available or not scanning.")
+            _isScanning.postValue(false) // Ensure UI reflects not scanning
+            return
+        }
+        Log.d(TAG, "Stopping BLE scan.")
         try {
-            bluetoothLeScanner?.stopScan(leScanCallback)
-            Log.d(TAG, "Scan stopped.")
+            bluetoothLeScanner.stopScan(leScanCallback)
         } catch (e: SecurityException) {
             Log.e(TAG, "SecurityException during stopScan: ${e.message}")
-            _connectionStatus.postValue("Erro de permissão ao parar o scan.")
+             _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_stop_scan_permission_error))
         }
         _isScanning.postValue(false)
     }
@@ -117,132 +152,362 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             super.onScanResult(callbackType, result)
+            if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+                Log.w(TAG, "BLUETOOTH_CONNECT permission missing in onScanResult, cannot get device name.")
+            }
             val device = result.device
-            Log.d(TAG, "onScanResult: Device Address: ${device?.address}, Name: ${device?.name}")
-
             val currentList = _discoveredDevices.value ?: mutableListOf()
-            if (device != null && device.address != null && currentList.none { it.address == device.address }) {
-                try {
-                     Log.d(TAG, "Device added: ${device.name ?: "Unknown"} - ${device.address}")
-                } catch (e: SecurityException) {
-                    Log.e(TAG, "SecurityException for device.name: ${e.message}")
-                }
+            if (device != null && device.name != null && !currentList.any { it.address == device.address }) {
                 currentList.add(device)
                 _discoveredDevices.postValue(currentList)
-            }
-        }
-
-        override fun onBatchScanResults(results: List<ScanResult>) {
-            super.onBatchScanResults(results)
-            Log.d(TAG, "onBatchScanResults: ${results.size} devices found")
-            results.forEach { result ->
-                val device = result.device
-                val currentList = _discoveredDevices.value ?: mutableListOf()
-                 if (device != null && device.address != null && currentList.none { it.address == device.address }) {
-                    try {
-                        Log.d(TAG, "Device added (batch): ${device.name ?: "Unknown"} - ${device.address}")
-                    } catch (e: SecurityException) {
-                        Log.e(TAG, "SecurityException for device.name (batch): ${e.message}")
-                    }
-                    currentList.add(device)
-                 }
-                 _discoveredDevices.postValue(currentList)
+                Log.i(TAG, "Device found: ${device.name} (${device.address})")
             }
         }
 
         override fun onScanFailed(errorCode: Int) {
             super.onScanFailed(errorCode)
-            Log.e(TAG, "LE Scan Failed: $errorCode")
+            Log.e(TAG, "BLE Scan Failed: $errorCode")
+            _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_scan_failed, errorCode.toString()))
             _isScanning.postValue(false)
-            _connectionStatus.postValue("Falha no Scan BLE: $errorCode")
         }
     }
 
     @SuppressLint("MissingPermission")
-    fun connectToDevice(device: BluetoothDevice) {
-        if (bluetoothGatt != null) {
-            Log.w(TAG, "GATT connection already exists or in progress. Disconnecting previous one.")
-            // bluetoothGatt?.disconnect() // Consider a full disconnect/close sequence
-            // bluetoothGatt?.close()
-            // bluetoothGatt = null 
-            // Você pode querer gerenciar isso de forma mais robusta, como permitir apenas uma conexão por vez.
+    fun connectGatt(device: BluetoothDevice) {
+        if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+             _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_ble_connect_permission_error))
+            Log.w(TAG, "BLUETOOTH_CONNECT permission not granted for connectGatt")
+            return
         }
-        _connectionStatus.postValue("Conectando a ${device.name ?: device.address}...")
-        Log.d(TAG, "Attempting to connect to device: ${device.address}")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        stopScan() // Stop scanning before connecting
+        _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_connecting_to, device.name ?: device.address))
+        Log.i(TAG, "Connecting to ${device.name ?: device.address}")
+        try {
             bluetoothGatt = device.connectGatt(getApplication(), false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-        } else {
-            bluetoothGatt = device.connectGatt(getApplication(), false, gattCallback)
+        } catch (e: SecurityException) {
+            Log.e(TAG, "SecurityException during connectGatt: ${e.message}")
+            _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_ble_connect_permission_error))
         }
     }
 
-    private val gattCallback = object : BluetoothGattCallback() {
+    private val gattCallback: BluetoothGattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-            val deviceAddress = gatt.device.address
-            val deviceName = gatt.device.name ?: deviceAddress
+            val deviceName = if (hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) gatt.device.name ?: gatt.device.address else gatt.device.address
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                Log.i(TAG, "Connected to GATT server on $deviceName.")
+                _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_connected_to, deviceName))
+                sharedPreferences.edit().putString(KEY_CONNECTED_DEVICE_ADDRESS, gatt.device.address).apply()
+                Log.i(TAG, "Device address ${gatt.device.address} saved to SharedPreferences.")
 
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    Log.i(TAG, "Successfully connected to $deviceName ($deviceAddress)")
-                    _connectionStatus.postValue("Conectado a $deviceName")
-                    stopScan() // Parar o scan após conectar
-                    bluetoothGatt = gatt // Store GATT instance
-                    
-                    // Salvar o endereço do dispositivo
-                    with(sharedPreferences.edit()) {
-                        putString(KEY_CONNECTED_DEVICE_ADDRESS, deviceAddress)
-                        apply()
-                    }
-                    Log.i(TAG, "Device address $deviceAddress saved to SharedPreferences.")
-
-                    // Descobrir serviços
-                    gatt.discoverServices()
-                    
-                    // Navegar para Home
-                    _navigateToHome.postValue(Unit)
-
-                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    Log.i(TAG, "Successfully disconnected from $deviceName ($deviceAddress)")
-                    _connectionStatus.postValue("Desconectado de $deviceName")
+                Log.d(TAG, "Attempting to discover services...")
+                if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+                    Log.w(TAG, "BLUETOOTH_CONNECT permission missing for discoverServices.")
+                     _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_ble_connect_permission_error))
                     closeGatt()
+                    return
                 }
-            } else {
-                Log.w(TAG, "Error $status encountered for $deviceName ($deviceAddress)! Disconnecting.")
-                _connectionStatus.postValue("Erro de conexão: $status com $deviceName")
+                val discoverServicesSuccess = gatt.discoverServices()
+                if (!discoverServicesSuccess) {
+                    Log.e(TAG, "discoverServices() failed to start.")
+                    _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_service_discovery_failed, deviceName))
+                    closeGatt()
+                } else {
+                    Log.d(TAG, "Service discovery initiated for $deviceName.")
+                }
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                Log.i(TAG, "Disconnected from GATT server on $deviceName.")
+                _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_disconnected_from, deviceName))
                 closeGatt()
             }
         }
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            val deviceName = if (hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) gatt.device.name ?: gatt.device.address else gatt.device.address
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                Log.i(TAG, "Services discovered for ${gatt.device.name ?: gatt.device.address}")
-                // TODO: Interagir com os serviços (ex: Nordic UART Service)
-                // gatt.services.forEach { service -> Log.d(TAG, "Service UUID: ${service.uuid}") }
+                Log.i(TAG, "Services discovered for $deviceName. Looking for NUS.")
+                val nusService = gatt.getService(NORDIC_UART_SERVICE_UUID)
+                if (nusService == null) {
+                    Log.w(TAG, "Nordic UART Service not found on $deviceName.")
+                    _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_nus_service_not_found, deviceName))
+                    // closeGatt() // Optional: disconnect if essential service is missing
+                    return
+                }
+
+                nusTxCharacteristic = nusService.getCharacteristic(NORDIC_UART_TX_CHARACTERISTIC_UUID)
+                nusRxCharacteristic = nusService.getCharacteristic(NORDIC_UART_RX_CHARACTERISTIC_UUID)
+
+                if (nusTxCharacteristic == null) {
+                    Log.w(TAG, "NUS TX characteristic not found on $deviceName.")
+                    _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_nus_tx_char_not_found, deviceName))
+                } else {
+                    Log.i(TAG, "NUS TX Characteristic found for $deviceName.")
+                    // Send datetime and navigate immediately after finding TX characteristic
+                    sendCurrentDateTime() // Attempt to send data
+                }
+
+                // Navigate regardless of TX found or send success, as per user's last request.
+                // Or only navigate if TX is found: if (nusTxCharacteristic != null) _navigateToHome.postValue(Unit)
+                Log.d(TAG, "Navigating to home screen...")
+                _navigateToHome.postValue(Unit)
+
+
+                if (nusRxCharacteristic == null) {
+                    Log.w(TAG, "NUS RX characteristic not found on $deviceName.")
+                     _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_nus_rx_char_not_found, deviceName))
+                } else {
+                    Log.i(TAG, "NUS RX Characteristic found for $deviceName. Attempting to enable notifications.")
+                    //enableNotifications(nusRxCharacteristic!!)
+                }
+
             } else {
-                Log.w(TAG, "Service discovery failed with status $status for ${gatt.device.name ?: gatt.device.address}")
+                Log.w(TAG, "onServicesDiscovered received error status: $status for $deviceName")
+                _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_service_discovery_failed_status, deviceName, status.toString()))
             }
         }
-        // TODO: Implementar onCharacteristicRead, onCharacteristicWrite, onCharacteristicChanged
+
+        @SuppressLint("MissingPermission")
+        private fun enableNotifications(characteristic: BluetoothGattCharacteristic) {
+            if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+                Log.w(TAG, "BLUETOOTH_CONNECT permission missing for enableNotifications.")
+                return
+            }
+            if (bluetoothGatt == null) {
+                Log.e(TAG, "bluetoothGatt is null in enableNotifications")
+                return
+            }
+
+            val cccd = characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
+            if (cccd == null) {
+                Log.w(TAG, "CLIENT_CHARACTERISTIC_CONFIG_UUID descriptor not found for ${characteristic.uuid}")
+                return // Cannot enable notifications if CCCD is missing
+            }
+
+            Log.d(TAG, "Enabling notifications for RX characteristic: ${characteristic.uuid}")
+            if (!bluetoothGatt!!.setCharacteristicNotification(characteristic, true)) {
+                Log.e(TAG, "setCharacteristicNotification failed for ${characteristic.uuid}")
+                return
+            }
+
+            // Write to CCCD to enable notifications
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val result = bluetoothGatt!!.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                Log.d(TAG, "writeDescriptor (Tiramisu+) for CCCD result: $result")
+                 if (result != BluetoothStatusCodes.SUCCESS){
+                     Log.e(TAG, "Failed to write CCCD descriptor (Tiramisu+): $result")
+                 }
+            } else {
+                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                val success = bluetoothGatt!!.writeDescriptor(cccd)
+                Log.d(TAG, "writeDescriptor (pre-Tiramisu) for CCCD success: $success")
+                if (!success) {
+                    Log.e(TAG, "Failed to write CCCD descriptor (pre-Tiramisu)")
+                }
+            }
+        }
+
+
+        @SuppressLint("MissingPermission")
+        override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            val deviceName = if (hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) gatt.device.name ?: gatt.device.address else gatt.device.address
+            Log.d(TAG, "onCharacteristicWrite for ${characteristic.uuid} on $deviceName status: $status")
+            if (characteristic.uuid == NORDIC_UART_TX_CHARACTERISTIC_UUID) {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    Log.i(TAG, "JSON data sent successfully to $deviceName.")
+                } else {
+                    Log.e(TAG, "Failed to send JSON data to $deviceName, status: $status")
+                    _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_json_send_failed, deviceName, status.toString()))
+                }
+            }
+        }
+        
+        // Overload for Android 13+ (API 33+)
+        @SuppressLint("MissingPermission")
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+            val deviceName = if (hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) gatt.device.name ?: gatt.device.address else gatt.device.address
+            val data = String(value, Charsets.UTF_8)
+            Log.i(TAG, "onCharacteristicChanged (API 33+) from $deviceName ${characteristic.uuid}: $data")
+             // Handle received data if necessary
+        }
+
+        // Deprecated version for older APIs
+        @Suppress("DEPRECATION")
+        @SuppressLint("MissingPermission")
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            val deviceName = if (hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) gatt.device.name ?: gatt.device.address else gatt.device.address
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                 val value = characteristic.value
+                 if (value != null) {
+                    val data = String(value, Charsets.UTF_8)
+                    Log.i(TAG, "onCharacteristicChanged (pre-API 33) from $deviceName ${characteristic.uuid}: $data")
+                    // Handle received data if necessary
+                 } else {
+                    Log.w(TAG, "onCharacteristicChanged (pre-API 33) from $deviceName ${characteristic.uuid} with null value")
+                 }
+            }
+        }
+        
+        @SuppressLint("MissingPermission")
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            val deviceName = if (hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) gatt.device.name ?: gatt.device.address else gatt.device.address
+            Log.d(TAG, "onDescriptorWrite for ${descriptor.uuid} on $deviceName status: $status")
+            if (descriptor.characteristic.uuid == nusRxCharacteristic?.uuid && descriptor.uuid == CLIENT_CHARACTERISTIC_CONFIG_UUID) {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    Log.i(TAG, "Successfully enabled notifications for RX characteristic on $deviceName.")
+                } else {
+                    Log.e(TAG, "Failed to enable notifications for RX characteristic on $deviceName, status: $status")
+                }
+            }
+        }
     }
+
 
     @SuppressLint("MissingPermission")
-    fun disconnect() {
-        bluetoothGatt?.disconnect()
+    private fun sendCurrentDateTime() {
+        if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+            Log.w(TAG, "BLUETOOTH_CONNECT permission missing for sendCurrentDateTime.")
+            _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_ble_connect_permission_error))
+            return
+        }
+        if (bluetoothGatt == null) {
+            Log.e(TAG, "bluetoothGatt is null in sendCurrentDateTime")
+             _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_gatt_null_on_send))
+            return
+        }
+        if (nusTxCharacteristic == null) {
+            Log.e(TAG, "nusTxCharacteristic is null in sendCurrentDateTime")
+            _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_nus_tx_char_not_found_on_send))
+            return
+        }
+
+        val now = LocalDateTime.now()
+        // Format: "%d-%d-%dT%d:%d:%d", &year, &month, &day, &hour, &minute, &second
+        // Using ISO_LOCAL_DATE_TIME format which is YYYY-MM-DDTHH:MM:SS.sss
+        // For the requested format without milliseconds and ensuring zero padding:
+        val year = now.year
+        val month = now.monthValue
+        val day = now.dayOfMonth
+        val hour = now.hour
+        val minute = now.minute
+        val second = now.second
+        val formattedDateTime = String.format(Locale.ROOT, "%04d-%02d-%02dT%02d:%02d:%02d", year, month, day, hour, minute, second)
+
+        val jsonPayload = JSONObject()
+        jsonPayload.put("datetime", formattedDateTime)
+        val jsonString = jsonPayload.toString()
+        val payloadBytes = jsonString.toByteArray(Charsets.UTF_8)
+
+        Log.i(TAG, "Sending JSON to NUS TX: $jsonString")
+
+        nusTxCharacteristic?.let { characteristic ->
+            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT // Or WRITE_TYPE_NO_RESPONSE
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val result = bluetoothGatt!!.writeCharacteristic(characteristic, payloadBytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+                Log.d(TAG, "writeCharacteristic (Tiramisu+) for NUS TX result: $result")
+                if (result != BluetoothStatusCodes.SUCCESS) {
+                    Log.e(TAG, "Failed to write characteristic (Tiramisu+): $result")
+                    _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_json_send_failed_code, result.toString()))
+                } else {
+                     // Success is reported in onCharacteristicWrite
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                characteristic.value = payloadBytes
+                @Suppress("DEPRECATION")
+                val success = bluetoothGatt!!.writeCharacteristic(characteristic)
+                Log.d(TAG, "writeCharacteristic (pre-Tiramisu) for NUS TX success: $success")
+                if (!success) {
+                     Log.e(TAG, "Failed to write characteristic (pre-Tiramisu)")
+                    _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_json_send_failed))
+                } else {
+                    // Success is reported in onCharacteristicWrite
+                }
+            }
+        }
+    }
+    private fun hasBluetoothConnectPermission(): Boolean {
+        return ActivityCompat.checkSelfPermission(
+            getApplication<Application>().applicationContext, // Corrigido
+            Manifest.permission.BLUETOOTH_CONNECT
+        ) == PackageManager.PERMISSION_GRANTED
     }
 
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-    private fun closeGatt() {
+
+
+
+    @SuppressLint("MissingPermission")
+    fun connectToDevice(device: BluetoothDevice) {
+        if (!hasBluetoothConnectPermission()) {
+            _connectionStatus.postValue(application.getString(R.string.status_connect_permission_error))
+            Log.w(TAG, "Bluetooth connect permission missing to connect.")
+            return
+        }
+
+        stopScan() // Garante que o scan está parado
+
+        _connectionStatus.postValue(
+            application.getString(
+                R.string.status_connecting_to,
+                device.name ?: device.address
+            )
+        )
+        Log.i(TAG, "Connecting to device: ${device.name} (${device.address})")
+
+        // Fechar qualquer conexão GATT existente antes de criar uma nova
         bluetoothGatt?.close()
         bluetoothGatt = null
+
+        // Conectar ao dispositivo
+        // Usar TRANSPORT_LE para conexões BLE explicitamente
+        // O handler pode ser útil para garantir que callbacks ocorram em um thread específico, mas null usa o padrão.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            bluetoothGatt =
+                device.connectGatt(application, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        } else {
+            bluetoothGatt = device.connectGatt(application, false, gattCallback)
+        }
+
+        if (bluetoothGatt == null) {
+            _connectionStatus.postValue(
+                application.getString(
+                    R.string.status_connection_failed_generic,
+                    device.name ?: device.address
+                )
+            )
+            Log.e(TAG, "connectGatt returned null for device: ${device.address}")
+        }
+    }
+    @SuppressLint("MissingPermission")
+    fun closeGatt() {
+        if (bluetoothGatt != null) {
+            if (hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+                try {
+                    bluetoothGatt?.disconnect()
+                    bluetoothGatt?.close()
+                    Log.i(TAG, "GATT client disconnected and closed.")
+                } catch (e: SecurityException) {
+                     Log.e(TAG, "SecurityException during closeGatt: ${e.message}")
+                }
+            } else {
+                Log.w(TAG, "BLUETOOTH_CONNECT permission missing, cannot fully close GATT.")
+            }
+            bluetoothGatt = null
+            nusTxCharacteristic = null
+            nusRxCharacteristic = null
+        }
     }
 
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private fun hasPermission(permission: String): Boolean {
+        return ActivityCompat.checkSelfPermission(
+            getApplication<Application>().applicationContext,
+            permission
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
     override fun onCleared() {
         super.onCleared()
-        Log.d(TAG, "ViewModel cleared. Disconnecting and closing GATT.")
-        disconnect()
         closeGatt()
     }
 }

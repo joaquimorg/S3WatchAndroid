@@ -2,6 +2,32 @@
     <string name="app_name">S3Watch</string>
     <string name="title_home">Home</string>
     <string name="title_device_connection">Devices</string>
-    <string name="title_notifications_settings">Notifications</string>
-    <string name="scan_devices">Scan devices</string>
+    <string name="title_notification_settings">Notifications</string>
+    <string name="scan_devices">Scan Devices</string>
+
+    <string name="button_scan_devices_action">Scan for Devices</string>
+    <string name="home_connected_to">Connected to: %1$s</string>
+    <string name="home_no_device_connected">No device connected.</string>
+    <string name="status_connecting_to">Connecting to %1$s...</string>
+    <string name="status_connected_to">Connected to %1$s</string>
+    <string name="status_disconnected_from">Disconnected from %1$s</string>
+    <string name="status_connection_error">Connection error: %1$s with %2$s</string>
+    <string name="status_scan_failed">BLE Scan Failed: %1$s</string>
+    <string name="status_scanning_devices">Scanning for devices...</string>
+    <string name="status_ble_scanner_not_available">BLE Scanner not available.</string>
+    <string name="status_scan_permission_error">Permission error during scan start.</string>
+    <string name="status_stop_scan_permission_error">Permission error during scan stop.</string>
+    <string name="stop_scan">Stop Scan</string>
+    <string name="status_connect_permission_error">Connection permission error.</string>
+    <string name="status_ble_connect_permission_error">BLE connection permission error.</string>
+    <string name="status_service_discovery_failed">Service discovery failed.</string>
+    <string name="status_nus_service_not_found">NUS service not found</string>
+    <string name="status_nus_tx_char_not_found">NUS TX char not found</string>
+    <string name="status_nus_rx_char_not_found">NUS RX char not found</string>
+    <string name="status_service_discovery_failed_status">Service discovery failed</string>
+    <string name="status_json_send_failed">JSON send failed</string>
+    <string name="status_gatt_null_on_send">GATT null on send</string>
+    <string name="status_nus_tx_char_not_found_on_send">NUS TX char not found on send</string>
+    <string name="status_json_send_failed_code">JSON send failed</string>
+    <string name="status_connection_failed_generic">Connection failed</string>
 </resources>
