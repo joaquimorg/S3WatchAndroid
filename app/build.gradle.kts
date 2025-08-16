@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
 }
+val nordic = extensions.getByType<org.gradle.api.artifacts.VersionCatalogsExtension>().named("nordic")
 
 android {
     namespace = "org.joaquim.s3watch"
@@ -48,6 +49,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.androidx.navigation.fragment.ktx)
     implementation(libs.androidx.navigation.ui.ktx)
+    implementation(nordic.findLibrary("nordic-ble-ktx").get())
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

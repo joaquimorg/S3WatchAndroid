@@ -17,6 +17,11 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
     }
+    versionCatalogs {
+        create("nordic") {
+            from("no.nordicsemi.android.gradle:version-catalog:1.0.20")
+        }
+    }
 }
 
 rootProject.name = "S3Watch"
