@@ -24,10 +24,15 @@
     <string name="status_nus_service_not_found">NUS service not found</string>
     <string name="status_nus_tx_char_not_found">NUS TX char not found</string>
     <string name="status_nus_rx_char_not_found">NUS RX char not found</string>
-    <string name="status_service_discovery_failed_status">Service discovery failed</string>
+    <string name="status_service_discovery_failed_status">Service discovery failed %1$s</string>
     <string name="status_json_send_failed">JSON send failed</string>
     <string name="status_gatt_null_on_send">GATT null on send</string>
     <string name="status_nus_tx_char_not_found_on_send">NUS TX char not found on send</string>
-    <string name="status_json_send_failed_code">JSON send failed</string>
+    <string name="status_json_send_failed_code">JSON send failed %1$s</string>
     <string name="status_connection_failed_generic">Connection failed</string>
+    <string name="status_error_gatt_null">Error GATT null</string>
+    <string name="status_nus_set_notify_failed">NUS set notify failed</string>
+    <string name="status_nus_rx_cccd_not_found">NUS RX CCCD not found</string>
+    <string name="status_nus_rx_cccd_write_fail">NUS RZ CCCD write fail</string>
+    <string name="status_nus_rx_enable_failed_status">NUS RX enable failed %1$s</string>
 </resources>

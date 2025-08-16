@@ -143,7 +143,7 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
             bluetoothLeScanner.stopScan(leScanCallback)
         } catch (e: SecurityException) {
             Log.e(TAG, "SecurityException during stopScan: ${e.message}")
-             _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_stop_scan_permission_error))
+            _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_stop_scan_permission_error))
         }
         _isScanning.postValue(false)
     }
@@ -175,7 +175,7 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
     @SuppressLint("MissingPermission")
     fun connectGatt(device: BluetoothDevice) {
         if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
-             _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_ble_connect_permission_error))
+            _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_ble_connect_permission_error))
             Log.w(TAG, "BLUETOOTH_CONNECT permission not granted for connectGatt")
             return
         }
@@ -203,7 +203,7 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
                 Log.d(TAG, "Attempting to discover services...")
                 if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
                     Log.w(TAG, "BLUETOOTH_CONNECT permission missing for discoverServices.")
-                     _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_ble_connect_permission_error))
+                    _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_ble_connect_permission_error))
                     closeGatt()
                     return
                 }
@@ -243,22 +243,24 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
                     _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_nus_tx_char_not_found, deviceName))
                 } else {
                     Log.i(TAG, "NUS TX Characteristic found for $deviceName.")
-                    // Send datetime and navigate immediately after finding TX characteristic
-                    sendCurrentDateTime() // Attempt to send data
+                    // Removed: sendCurrentDateTime() // Attempt to send data
                 }
 
                 // Navigate regardless of TX found or send success, as per user's last request.
                 // Or only navigate if TX is found: if (nusTxCharacteristic != null) _navigateToHome.postValue(Unit)
+                // This navigation will now happen before sendCurrentDateTime is called from onDescriptorWrite.
+                // This might be okay, or you might want to move navigation to after successful send in onCharacteristicWrite
+                // or after successful notification setup in onDescriptorWrite if the Home screen relies on that.
                 Log.d(TAG, "Navigating to home screen...")
                 _navigateToHome.postValue(Unit)
 
 
                 if (nusRxCharacteristic == null) {
                     Log.w(TAG, "NUS RX characteristic not found on $deviceName.")
-                     _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_nus_rx_char_not_found, deviceName))
+                    _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_nus_rx_char_not_found, deviceName))
                 } else {
                     Log.i(TAG, "NUS RX Characteristic found for $deviceName. Attempting to enable notifications.")
-                    //enableNotifications(nusRxCharacteristic!!)
+                    enableNotifications(nusRxCharacteristic!!)
                 }
 
             } else {
@@ -269,42 +271,74 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
 
         @SuppressLint("MissingPermission")
         private fun enableNotifications(characteristic: BluetoothGattCharacteristic) {
-            if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
-                Log.w(TAG, "BLUETOOTH_CONNECT permission missing for enableNotifications.")
+            val gatt = bluetoothGatt ?: run {
+                Log.e(TAG, "bluetoothGatt is null in enableNotifications, cannot proceed.")
+                _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_error_gatt_null)) // You'll need to add this string resource
                 return
             }
-            if (bluetoothGatt == null) {
-                Log.e(TAG, "bluetoothGatt is null in enableNotifications")
+
+            val deviceNameToLog = if (hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+                gatt.device.name ?: gatt.device.address
+            } else {
+                gatt.device.address
+            }
+
+            if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
+                Log.w(TAG, "BLUETOOTH_CONNECT permission missing for enableNotifications on $deviceNameToLog.")
+                _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_ble_connect_permission_error))
+                return
+            }
+
+            if (characteristic.uuid != NORDIC_UART_RX_CHARACTERISTIC_UUID) {
+                Log.w(TAG, "enableNotifications called for an unexpected characteristic: ${characteristic.uuid} on $deviceNameToLog. Expected ${NORDIC_UART_RX_CHARACTERISTIC_UUID}.")
+                // Consider adding a specific status update if this scenario is critical
                 return
             }
 
             val cccd = characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
             if (cccd == null) {
-                Log.w(TAG, "CLIENT_CHARACTERISTIC_CONFIG_UUID descriptor not found for ${characteristic.uuid}")
-                return // Cannot enable notifications if CCCD is missing
-            }
-
-            Log.d(TAG, "Enabling notifications for RX characteristic: ${characteristic.uuid}")
-            if (!bluetoothGatt!!.setCharacteristicNotification(characteristic, true)) {
-                Log.e(TAG, "setCharacteristicNotification failed for ${characteristic.uuid}")
+                Log.w(TAG, "CLIENT_CHARACTERISTIC_CONFIG_UUID descriptor not found for RX characteristic ${characteristic.uuid} on $deviceNameToLog.")
+                _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_nus_rx_cccd_not_found, deviceNameToLog)) // Add this string
                 return
             }
 
-            // Write to CCCD to enable notifications
+            Log.d(TAG, "Attempting to enable notifications for RX characteristic: ${characteristic.uuid} on $deviceNameToLog.")
+            if (!gatt.setCharacteristicNotification(characteristic, true)) {
+                Log.e(TAG, "setCharacteristicNotification failed for ${characteristic.uuid} on $deviceNameToLog.")
+                _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_nus_set_notify_failed, deviceNameToLog)) // Add this string
+                return
+            }
+
+            var initiationSuccess = false
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                val result = bluetoothGatt!!.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-                Log.d(TAG, "writeDescriptor (Tiramisu+) for CCCD result: $result")
-                 if (result != BluetoothStatusCodes.SUCCESS){
-                     Log.e(TAG, "Failed to write CCCD descriptor (Tiramisu+): $result")
-                 }
+                val writeResult = gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                Log.d(TAG, "writeDescriptor (Tiramisu+) for CCCD on $deviceNameToLog result: $writeResult (0 is success)")
+                if (writeResult == BluetoothStatusCodes.SUCCESS) {
+                    initiationSuccess = true
+                } else {
+                    Log.e(TAG, "Failed to initiate write CCCD descriptor (Tiramisu+) for $deviceNameToLog: error code $writeResult")
+                }
             } else {
-                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                val success = bluetoothGatt!!.writeDescriptor(cccd)
-                Log.d(TAG, "writeDescriptor (pre-Tiramisu) for CCCD success: $success")
-                if (!success) {
-                    Log.e(TAG, "Failed to write CCCD descriptor (pre-Tiramisu)")
+                @Suppress("DEPRECATION")
+                if (!cccd.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) {
+                    Log.e(TAG, "Failed to set value for CCCD descriptor (pre-Tiramisu) for $deviceNameToLog.")
+                    // This failure will be caught by !initiationSuccess below if writeDescriptor also fails or isn't called.
+                }
+                if (gatt.writeDescriptor(cccd)) {
+                    initiationSuccess = true
+                    Log.d(TAG, "writeDescriptor (pre-Tiramisu) for CCCD on $deviceNameToLog initiated successfully.")
+                } else {
+                    Log.e(TAG, "Failed to initiate write CCCD descriptor (pre-Tiramisu) for $deviceNameToLog.")
                 }
             }
+
+            if (!initiationSuccess) {
+                _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_nus_rx_cccd_write_fail, deviceNameToLog)) // Add this string
+                // Clean up: if CCCD write failed to initiate, disable local notification setting.
+                gatt.setCharacteristicNotification(characteristic, false)
+                Log.w(TAG, "Cleaned up by calling setCharacteristicNotification(false) for ${characteristic.uuid} on $deviceNameToLog due to CCCD write initiation failure.")
+            }
+            // Note: The actual success/failure of enabling notification is confirmed asynchronously in onDescriptorWrite callback.
         }
 
 
@@ -315,20 +349,22 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
             if (characteristic.uuid == NORDIC_UART_TX_CHARACTERISTIC_UUID) {
                 if (status == BluetoothGatt.GATT_SUCCESS) {
                     Log.i(TAG, "JSON data sent successfully to $deviceName.")
+                    // Potentially navigate to home screen here if you want to wait for successful send
+                    // _navigateToHome.postValue(Unit)
                 } else {
                     Log.e(TAG, "Failed to send JSON data to $deviceName, status: $status")
-                    _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_json_send_failed, deviceName, status.toString()))
+                    _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_json_send_failed, deviceName, status.toString())) // Ensure this string takes 2 params
                 }
             }
         }
-        
+
         // Overload for Android 13+ (API 33+)
         @SuppressLint("MissingPermission")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
             val deviceName = if (hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) gatt.device.name ?: gatt.device.address else gatt.device.address
             val data = String(value, Charsets.UTF_8)
             Log.i(TAG, "onCharacteristicChanged (API 33+) from $deviceName ${characteristic.uuid}: $data")
-             // Handle received data if necessary
+            // Handle received data if necessary
         }
 
         // Deprecated version for older APIs
@@ -337,27 +373,40 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             val deviceName = if (hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) gatt.device.name ?: gatt.device.address else gatt.device.address
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                 val value = characteristic.value
-                 if (value != null) {
+                val value = characteristic.value
+                if (value != null) {
                     val data = String(value, Charsets.UTF_8)
                     Log.i(TAG, "onCharacteristicChanged (pre-API 33) from $deviceName ${characteristic.uuid}: $data")
                     // Handle received data if necessary
-                 } else {
+                } else {
                     Log.w(TAG, "onCharacteristicChanged (pre-API 33) from $deviceName ${characteristic.uuid} with null value")
-                 }
+                }
             }
         }
-        
+
         @SuppressLint("MissingPermission")
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
             val deviceName = if (hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) gatt.device.name ?: gatt.device.address else gatt.device.address
-            Log.d(TAG, "onDescriptorWrite for ${descriptor.uuid} on $deviceName status: $status")
-            if (descriptor.characteristic.uuid == nusRxCharacteristic?.uuid && descriptor.uuid == CLIENT_CHARACTERISTIC_CONFIG_UUID) {
+            Log.d(TAG, "onDescriptorWrite for ${descriptor.uuid} (characteristic ${descriptor.characteristic.uuid}) on $deviceName status: $status")
+
+            // Check if this is the descriptor for our NUS RX characteristic's CCCD
+            if (descriptor.characteristic.uuid == NORDIC_UART_RX_CHARACTERISTIC_UUID && descriptor.uuid == CLIENT_CHARACTERISTIC_CONFIG_UUID) {
                 if (status == BluetoothGatt.GATT_SUCCESS) {
                     Log.i(TAG, "Successfully enabled notifications for RX characteristic on $deviceName.")
+                    // Now that notifications are confirmed enabled, try sending data.
+                    if (nusTxCharacteristic != null) {
+                        Log.d(TAG, "Notifications enabled, attempting to send current date/time.")
+                        sendCurrentDateTime()
+                    } else {
+                        Log.w(TAG, "Notifications enabled, but NUS TX characteristic is null. Cannot send data.")
+                        _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_nus_tx_char_not_found_on_send))
+                    }
                 } else {
                     Log.e(TAG, "Failed to enable notifications for RX characteristic on $deviceName, status: $status")
+                    _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_nus_rx_enable_failed_status, deviceName, status.toString())) // Add new string
                 }
+            } else {
+                Log.d(TAG, "onDescriptorWrite for a different descriptor: ${descriptor.uuid} on char ${descriptor.characteristic.uuid}")
             }
         }
     }
@@ -372,7 +421,7 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
         }
         if (bluetoothGatt == null) {
             Log.e(TAG, "bluetoothGatt is null in sendCurrentDateTime")
-             _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_gatt_null_on_send))
+            _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_gatt_null_on_send))
             return
         }
         if (nusTxCharacteristic == null) {
@@ -382,7 +431,7 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
         }
 
         val now = LocalDateTime.now()
-        // Format: "%d-%d-%dT%d:%d:%d", &year, &month, &day, &hour, &minute, &second
+        // Format: \"%d-%d-%dT%d:%d:%d\", &year, &month, &day, &hour, &minute, &second
         // Using ISO_LOCAL_DATE_TIME format which is YYYY-MM-DDTHH:MM:SS.sss
         // For the requested format without milliseconds and ensuring zero padding:
         val year = now.year
@@ -401,28 +450,30 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
         Log.i(TAG, "Sending JSON to NUS TX: $jsonString")
 
         nusTxCharacteristic?.let { characteristic ->
-            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT // Or WRITE_TYPE_NO_RESPONSE
-
+            //characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT // Or WRITE_TYPE_NO_RESPONSE
+            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val result = bluetoothGatt!!.writeCharacteristic(characteristic, payloadBytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
-                Log.d(TAG, "writeCharacteristic (Tiramisu+) for NUS TX result: $result")
-                if (result != BluetoothStatusCodes.SUCCESS) {
-                    Log.e(TAG, "Failed to write characteristic (Tiramisu+): $result")
+                Log.d(TAG, "writeCharacteristic (Tiramisu+) for NUS TX result: $result (0 is SUCCESS, 7 is GATT_WRITE_NOT_PERMITTED, 257 is GATT_FAILURE etc.)")
+                if (result != BluetoothStatusCodes.SUCCESS) { // BluetoothStatusCodes.SUCCESS is 0
+                    Log.e(TAG, "Failed to initiate write characteristic (Tiramisu+): error $result")
                     _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_json_send_failed_code, result.toString()))
                 } else {
-                     // Success is reported in onCharacteristicWrite
+                    // Success is reported in onCharacteristicWrite
+                    Log.d(TAG, "Successfully initiated writeCharacteristic (Tiramisu+) for NUS TX.")
                 }
             } else {
                 @Suppress("DEPRECATION")
                 characteristic.value = payloadBytes
                 @Suppress("DEPRECATION")
                 val success = bluetoothGatt!!.writeCharacteristic(characteristic)
-                Log.d(TAG, "writeCharacteristic (pre-Tiramisu) for NUS TX success: $success")
+                Log.d(TAG, "writeCharacteristic (pre-Tiramisu) for NUS TX initiated: $success")
                 if (!success) {
-                     Log.e(TAG, "Failed to write characteristic (pre-Tiramisu)")
+                    Log.e(TAG, "Failed to initiate write characteristic (pre-Tiramisu)")
                     _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_json_send_failed))
                 } else {
                     // Success is reported in onCharacteristicWrite
+                    Log.d(TAG, "Successfully initiated writeCharacteristic (pre-Tiramisu) for NUS TX.")
                 }
             }
         }
@@ -488,7 +539,7 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
                     bluetoothGatt?.close()
                     Log.i(TAG, "GATT client disconnected and closed.")
                 } catch (e: SecurityException) {
-                     Log.e(TAG, "SecurityException during closeGatt: ${e.message}")
+                    Log.e(TAG, "SecurityException during closeGatt: ${e.message}")
                 }
             } else {
                 Log.w(TAG, "BLUETOOTH_CONNECT permission missing, cannot fully close GATT.")
