@@ -7,6 +7,8 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.map
 import org.joaquim.s3watch.R
 import org.joaquim.s3watch.bluetooth.BluetoothCentralManager
+import org.joaquim.s3watch.models.DeviceData
+import android.util.Log
 
 class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -28,6 +30,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private val _deviceData = MutableLiveData<DeviceData?>()
+    val deviceData: LiveData<DeviceData?> = _deviceData
+
     private val bluetoothManager = BluetoothCentralManager.INSTANCE
 
     private val connectionStateObserver: (BluetoothCentralManager.ConnectionStatus?) -> Unit = { status ->
@@ -44,10 +49,23 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private val bluetoothDataStringObserver: (String?) -> Unit = { jsonString ->
+        jsonString?.let {
+            try {
+                val parsedData = DeviceData.fromJson(it)
+                _deviceData.postValue(parsedData)
+            } catch (e: Exception) {
+                Log.e("HomeViewModel", "Error parsing DeviceData from JSON: $it", e)
+                _deviceData.postValue(null) // Post null or handle error
+            }
+        } ?: _deviceData.postValue(null)
+    }
+
     init {
         bluetoothManager.connectionState.observeForever(connectionStateObserver)
         bluetoothManager.connectedDeviceName.observeForever(deviceNameObserver)
         bluetoothManager.lastErrorMessage.observeForever(errorMessageObserver)
+        bluetoothManager.dataReceived.observeForever(bluetoothDataStringObserver) // Observe device data
         loadInitialDeviceStateAndReconnectIfNeeded()
     }
 
@@ -56,6 +74,15 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         val currentName = bluetoothManager.connectedDeviceName.value
         _connectionState.postValue(currentStatus)
         _connectedDeviceName.postValue(currentName)
+        // Corrected: Changed receivedData to dataReceived
+        bluetoothManager.dataReceived.value?.let { jsonString ->
+            try {
+                _deviceData.postValue(DeviceData.fromJson(jsonString))
+            } catch (e: Exception) {
+                Log.e("HomeViewModel", "Error parsing initial DeviceData from JSON: $jsonString", e)
+                _deviceData.postValue(null)
+            }
+        } ?: _deviceData.postValue(null) // Load initial device data
         updateUiTextBasedOnState(currentStatus, currentName)
 
         if (currentStatus == BluetoothCentralManager.ConnectionStatus.DISCONNECTED && currentName != null) {
@@ -98,10 +125,19 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendDateTimeToDevice() {
         if (bluetoothManager.connectionState.value == BluetoothCentralManager.ConnectionStatus.CONNECTED) {
-            _text.postValue("Sending Date/Time to ${connectedDeviceName.value ?: "device"}...")
+            //_text.postValue("Sending Date/Time to ${connectedDeviceName.value ?: "device"}...")
             bluetoothManager.sendDateTime()
         } else {
             _text.postValue("Device not connected. Cannot send Date/Time.")
+        }
+    }
+
+    fun sendStatusToDevice() {
+        if (bluetoothManager.connectionState.value == BluetoothCentralManager.ConnectionStatus.CONNECTED) {
+            //_text.postValue("Sending Date/Time to ${connectedDeviceName.value ?: "device"}...")
+            bluetoothManager.sendStatus()
+        } else {
+            _text.postValue("Device not connected. Cannot send.")
         }
     }
 
@@ -110,5 +146,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         bluetoothManager.connectionState.removeObserver(connectionStateObserver)
         bluetoothManager.connectedDeviceName.removeObserver(deviceNameObserver)
         bluetoothManager.lastErrorMessage.removeObserver(errorMessageObserver)
+        bluetoothManager.dataReceived.removeObserver(bluetoothDataStringObserver) // Remove observer
     }
 }

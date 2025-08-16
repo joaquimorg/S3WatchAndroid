@@ -8,7 +8,7 @@
     <string name="button_scan_devices_action">Scan for Devices</string>
     <string name="home_connected_to">Connected to: %1$s</string>
     <string name="home_no_device_connected">No device connected.</string>
-    <string name="status_connecting_to">Connecting to %1$s...</string>
+    <string name="status_connecting_to">Connecting to %1$s…</string>
     <string name="status_connected_to">Connected to %1$s</string>
     <string name="status_disconnected_from">Disconnected from %1$s</string>
     <string name="status_connection_error">Connection error: %1$s with %2$s</string>
@@ -49,5 +49,8 @@
     <string name="action_disconnect">Disconnect</string>
     <string name="action_try_to_reconnect">Try to Reconnect</string>
     <string name="action_connecting">Connecting…</string>
+    <string name="battery_level_prefix">Battery Level: %1$d%%</string> <!-- Corrected -->
+    <string name="charging_status_prefix">Charging %1$s</string>
+    <string name="steps_count_prefix">Steps: %1$d</string> <!-- Changed to %1$d and added colon for consistency -->
 
 </resources>

@@ -1,5 +1,6 @@
 package org.joaquim.s3watch.ui.home
 
+import android.annotation.SuppressLint
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -17,6 +18,7 @@ class HomeFragment : Fragment() {
 
     private val homeViewModel: HomeViewModel by viewModels()
 
+    @SuppressLint("StringFormatInvalid")
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -54,6 +56,14 @@ class HomeFragment : Fragment() {
             binding.buttonReconnect.setText(stringResId)
         }
 
+        homeViewModel.deviceData.observe(viewLifecycleOwner) { deviceData ->
+            deviceData?.let {
+                binding.textBattery.text = getString(R.string.battery_level_prefix, it.battery)
+                binding.textCharging.text = getString(R.string.charging_status_prefix, it.charging.toString())
+                binding.textSteps.text = getString(R.string.steps_count_prefix, it.steps)
+            }
+        }
+
         // Set up button listeners
         binding.buttonReconnect.setOnClickListener {
             homeViewModel.handleReconnectButtonClick()
@@ -61,6 +71,10 @@ class HomeFragment : Fragment() {
 
         binding.buttonSendDatetime.setOnClickListener {
             homeViewModel.sendDateTimeToDevice()
+        }
+
+        binding.buttonSendStatus.setOnClickListener {
+            homeViewModel.sendStatusToDevice()
         }
 
         return root
