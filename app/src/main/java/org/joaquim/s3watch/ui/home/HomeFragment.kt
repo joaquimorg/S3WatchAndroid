@@ -24,18 +24,39 @@ class HomeFragment : Fragment() {
         _binding = FragmentHomeBinding.inflate(inflater, container, false)
         val root: View = binding.root
 
-        // Observe connectedDeviceAddress to update the UI
-        homeViewModel.connectedDeviceAddress.observe(viewLifecycleOwner) { address ->
-            if (address != null) {
-                binding.textHome.text = getString(R.string.home_connected_to, address)
+        // Observe LiveData from HomeViewModel
+        homeViewModel.text.observe(viewLifecycleOwner) { statusText ->
+            binding.textHome.text = statusText // Main status text (e.g., "Conectado a: S3Watch")
+        }
+
+        homeViewModel.connectedDeviceName.observe(viewLifecycleOwner) { name ->
+            if (name != null) {
+                binding.textDeviceName.text = getString(R.string.home_device_name_prefix, name)
+                binding.textDeviceName.visibility = View.VISIBLE
             } else {
-                binding.textHome.text = getString(R.string.home_no_device_connected)
+                binding.textDeviceName.visibility = View.GONE
             }
         }
-        // Remove the observer for homeViewModel.text if it's no longer used or managed differently
-        // homeViewModel.text.observe(viewLifecycleOwner) {
-        //    binding.textHome.text = it
-        // }
+
+        homeViewModel.connectionState.observe(viewLifecycleOwner) { state ->
+            val statusString = when(state) {
+                HomeViewModel.ConnectionStatus.CONNECTED -> getString(R.string.status_connected)
+                HomeViewModel.ConnectionStatus.DISCONNECTED -> getString(R.string.status_disconnected)
+                HomeViewModel.ConnectionStatus.CONNECTING -> getString(R.string.status_connecting)
+                HomeViewModel.ConnectionStatus.ERROR -> getString(R.string.status_error)
+                else -> getString(R.string.status_unknown) // Should not happen
+            }
+            binding.textConnectionStatus.text = getString(R.string.home_connection_status_prefix, statusString)
+        }
+
+        // Set up button listeners
+        binding.buttonReconnect.setOnClickListener {
+            homeViewModel.attemptDeviceReconnect()
+        }
+
+        binding.buttonSendDatetime.setOnClickListener {
+            homeViewModel.sendDateTimeToDevice()
+        }
 
         return root
     }

@@ -13,7 +13,7 @@
     <string name="status_disconnected_from">Disconnected from %1$s</string>
     <string name="status_connection_error">Connection error: %1$s with %2$s</string>
     <string name="status_scan_failed">BLE Scan Failed: %1$s</string>
-    <string name="status_scanning_devices">Scanning for devices...</string>
+    <string name="status_scanning_devices">Scanning for devices…</string>
     <string name="status_ble_scanner_not_available">BLE Scanner not available.</string>
     <string name="status_scan_permission_error">Permission error during scan start.</string>
     <string name="status_stop_scan_permission_error">Permission error during scan stop.</string>
@@ -35,4 +35,19 @@
     <string name="status_nus_rx_cccd_not_found">NUS RX CCCD not found</string>
     <string name="status_nus_rx_cccd_write_fail">NUS RZ CCCD write fail</string>
     <string name="status_nus_rx_enable_failed_status">NUS RX enable failed %1$s</string>
+
+    <!-- Novas strings para HomeFragment -->
+    <string name="home_device_name_prefix">Smartwatch: %1$s</string>
+    <string name="home_connection_status_prefix">Status %1$s</string>
+    <string name="status_connected">Connected</string>
+    <string name="status_disconnected">Disconnected</string>
+    <string name="status_connecting">Connecting…</string>
+    <string name="status_error">Connection Error</string>
+    <string name="status_unknown">Unknown</string>
+    <string name="button_reconnect_text">Try to reconnect</string>
+    <string name="button_send_datetime_text">Send Date/Time</string>
+    <string name="action_disconnect">Disconnect</string>
+    <string name="action_try_to_reconnect">Try to Reconnect</string>
+    <string name="action_connecting">Connecting…</string>
+
 </resources>

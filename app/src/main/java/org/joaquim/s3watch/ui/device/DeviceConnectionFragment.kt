@@ -91,7 +91,7 @@ class DeviceConnectionFragment : Fragment() {
     private fun setupRecyclerView() {
         deviceListAdapter = BluetoothDeviceListAdapter { device ->
             viewModel.stopScan() // Parar o scan antes de tentar conectar
-            viewModel.connectToDevice(device)
+            viewModel.connectGatt(device)
         }
         binding.devicesRecyclerView.apply {
             adapter = deviceListAdapter
