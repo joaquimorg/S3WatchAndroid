@@ -4,16 +4,11 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.map
+import org.joaquim.s3watch.R
 import org.joaquim.s3watch.bluetooth.BluetoothCentralManager
 
 class HomeViewModel(application: Application) : AndroidViewModel(application) {
-
-    enum class ConnectionStatus {
-        CONNECTED,
-        DISCONNECTED,
-        CONNECTING,
-        ERROR
-    }
 
     private val _text = MutableLiveData<String>()
     val text: LiveData<String> = _text
@@ -21,14 +16,22 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val _connectedDeviceName = MutableLiveData<String?>()
     val connectedDeviceName: LiveData<String?> = _connectedDeviceName
 
-    private val _connectionState = MutableLiveData<ConnectionStatus>()
-    val connectionState: LiveData<ConnectionStatus> = _connectionState
+    // Internal and Exposed LiveData using BluetoothCentralManager.ConnectionStatus
+    private val _connectionState = MutableLiveData<BluetoothCentralManager.ConnectionStatus?>()
+    val connectionState: LiveData<BluetoothCentralManager.ConnectionStatus?> = _connectionState
+
+    val reconnectButtonText: LiveData<Int> = connectionState.map {
+        when (it) {
+            BluetoothCentralManager.ConnectionStatus.CONNECTED -> R.string.action_disconnect
+            BluetoothCentralManager.ConnectionStatus.CONNECTING -> R.string.action_connecting // Or a more specific "Cancel Connecting"
+            else -> R.string.action_try_to_reconnect
+        }
+    }
 
     private val bluetoothManager = BluetoothCentralManager.INSTANCE
 
-    // Lambdas for observing, to allow removal in onCleared
-    private val connectionStateObserver: (ConnectionStatus?) -> Unit = { status ->
-        _connectionState.postValue(status ?: ConnectionStatus.DISCONNECTED)
+    private val connectionStateObserver: (BluetoothCentralManager.ConnectionStatus?) -> Unit = { status ->
+        _connectionState.postValue(status ?: BluetoothCentralManager.ConnectionStatus.DISCONNECTED)
         updateUiTextBasedOnState(status, bluetoothManager.connectedDeviceName.value)
     }
     private val deviceNameObserver: (String?) -> Unit = { name ->
@@ -36,80 +39,67 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         updateUiTextBasedOnState(bluetoothManager.connectionState.value, name)
     }
     private val errorMessageObserver: (String?) -> Unit = { errorMessage ->
-        if (errorMessage != null && _connectionState.value == ConnectionStatus.ERROR) {
+        if (errorMessage != null && _connectionState.value == BluetoothCentralManager.ConnectionStatus.ERROR) {
             _text.postValue("Error: $errorMessage")
         }
     }
 
     init {
-        // Observe connection state from BluetoothCentralManager
         bluetoothManager.connectionState.observeForever(connectionStateObserver)
-
-        // Observe connected device name from BluetoothCentralManager
         bluetoothManager.connectedDeviceName.observeForever(deviceNameObserver)
-
-        // Observe error messages from BluetoothCentralManager
         bluetoothManager.lastErrorMessage.observeForever(errorMessageObserver)
-        
-        // Load initial state and attempt reconnect if disconnected
         loadInitialDeviceStateAndReconnectIfNeeded()
     }
 
     private fun loadInitialDeviceStateAndReconnectIfNeeded() {
-        val currentStatus = bluetoothManager.connectionState.value ?: ConnectionStatus.DISCONNECTED
+        val currentStatus = bluetoothManager.connectionState.value ?: BluetoothCentralManager.ConnectionStatus.DISCONNECTED
         val currentName = bluetoothManager.connectedDeviceName.value
         _connectionState.postValue(currentStatus)
         _connectedDeviceName.postValue(currentName)
         updateUiTextBasedOnState(currentStatus, currentName)
 
-        if (currentStatus == ConnectionStatus.DISCONNECTED) {
-            _text.postValue("No device connected. Trying to reconnect...")
-            bluetoothManager.reconnect() // Attempt to reconnect to the last known device
+        if (currentStatus == BluetoothCentralManager.ConnectionStatus.DISCONNECTED && currentName != null) {
+             // Only try to reconnect if there was a previously connected device
+            _text.postValue(getApplication<Application>().getString(R.string.status_connecting_to, currentName))
+            bluetoothManager.reconnect()
+        } else if (currentStatus == BluetoothCentralManager.ConnectionStatus.DISCONNECTED) {
+            _text.postValue(getApplication<Application>().getString(R.string.home_no_device_connected))
         }
     }
     
-    private fun updateUiTextBasedOnState(status: ConnectionStatus?, name: String?) {
+    private fun updateUiTextBasedOnState(status: BluetoothCentralManager.ConnectionStatus?, name: String?) {
+        val app = getApplication<Application>()
         when (status) {
-            ConnectionStatus.CONNECTED -> _text.postValue("Connected to: ${name ?: "Device"}")
-            ConnectionStatus.CONNECTING -> _text.postValue("Connecting to: ${name ?: "Device"}...")
-            ConnectionStatus.DISCONNECTED -> _text.postValue("No device connected.")
-            ConnectionStatus.ERROR -> {
+            BluetoothCentralManager.ConnectionStatus.CONNECTED -> _text.postValue(app.getString(R.string.home_connected_to, name ?: "Device"))
+            BluetoothCentralManager.ConnectionStatus.CONNECTING -> _text.postValue(app.getString(R.string.status_connecting_to, name ?: "Device"))
+            BluetoothCentralManager.ConnectionStatus.DISCONNECTED -> _text.postValue(app.getString(R.string.home_no_device_connected))
+            BluetoothCentralManager.ConnectionStatus.ERROR -> {
                 if (bluetoothManager.lastErrorMessage.value == null) {
-                     _text.postValue("Connection error with ${name ?: "device"}.")
-                }
-                // Error message is also handled by errorMessageObserver
+                     _text.postValue(app.getString(R.string.status_connection_error, "Unknown error", name ?: "device"))
+                } // Error message is also handled by errorMessageObserver, which might be more specific
             }
-            null -> _text.postValue("Unknown connection state.")
+            null -> _text.postValue(app.getString(R.string.status_unknown)) // Should ideally not be null after init
         }
     }
 
-    fun refreshConnectedDevice() {
-        // This function might ask BluetoothCentralManager to re-evaluate/re-emit its state,
-        // or simply reload from the manager's current LiveData as done in loadInitialDeviceState.
-        val currentStatus = bluetoothManager.connectionState.value ?: ConnectionStatus.DISCONNECTED
-        val currentName = bluetoothManager.connectedDeviceName.value
-        _connectionState.postValue(currentStatus)
-        _connectedDeviceName.postValue(currentName)
-        updateUiTextBasedOnState(currentStatus, currentName)
-        // Optionally, if BluetoothCentralManager has a specific refresh method:
-        // bluetoothManager.refreshState() 
-    }
-
-    fun attemptDeviceReconnect() {
-        _connectionState.postValue(ConnectionStatus.CONNECTING) // Immediate UI feedback
-        _text.postValue("Attempting to reconnect...")
-        bluetoothManager.reconnect()
-        // The result of the reconnection will be observed through BluetoothCentralManager's LiveData
+    fun handleReconnectButtonClick() {
+        when (connectionState.value) {
+            BluetoothCentralManager.ConnectionStatus.CONNECTED -> bluetoothManager.disconnect()
+            BluetoothCentralManager.ConnectionStatus.CONNECTING -> { /* TODO: Implement cancel connection logic if desired */ }
+            BluetoothCentralManager.ConnectionStatus.DISCONNECTED, BluetoothCentralManager.ConnectionStatus.ERROR, null -> {
+                _connectionState.postValue(BluetoothCentralManager.ConnectionStatus.CONNECTING) // Immediate UI feedback
+                // Try to reconnect to the last device, or prompt user if none is known
+                val lastName = bluetoothManager.connectedDeviceName.value ?: "previous device"
+                 _text.postValue(getApplication<Application>().getString(R.string.status_connecting_to, lastName))
+                bluetoothManager.reconnect()
+            }
+        }
     }
 
     fun sendDateTimeToDevice() {
-        if (bluetoothManager.connectionState.value == ConnectionStatus.CONNECTED) {
+        if (bluetoothManager.connectionState.value == BluetoothCentralManager.ConnectionStatus.CONNECTED) {
             _text.postValue("Sending Date/Time to ${connectedDeviceName.value ?: "device"}...")
             bluetoothManager.sendDateTime()
-            // Feedback for the send operation (success/failure) could come from another LiveData
-            // in BluetoothCentralManager, e.g., bluetoothManager.lastSendStatus.observeForever { ... }
-            // For now, we assume if no immediate error, it was "sent".
-            // A more robust implementation would update _text upon confirmation or failure from the manager.
         } else {
             _text.postValue("Device not connected. Cannot send Date/Time.")
         }
@@ -117,7 +107,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        // Remove observers to prevent memory leaks
         bluetoothManager.connectionState.removeObserver(connectionStateObserver)
         bluetoothManager.connectedDeviceName.removeObserver(deviceNameObserver)
         bluetoothManager.lastErrorMessage.removeObserver(errorMessageObserver)

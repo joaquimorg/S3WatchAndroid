@@ -28,6 +28,7 @@ import java.util.Locale
 @SuppressLint("MissingPermission")
 object BluetoothCentralManager : ConnectionObserver {
 
+
     private lateinit var applicationContext: Application
     private lateinit var sharedPreferences: SharedPreferences
     private var bluetoothAdapter: BluetoothAdapter? = null
@@ -56,6 +57,7 @@ object BluetoothCentralManager : ConnectionObserver {
         val adapter = bluetoothAdapter
         if (adapter == null || !adapter.isEnabled) {
             _lastErrorMessage.postValue("Bluetooth not available")
+
             _connectionState.postValue(ConnectionStatus.ERROR)
             return
         }
@@ -112,7 +114,6 @@ object BluetoothCentralManager : ConnectionObserver {
     override fun onDeviceConnecting(device: BluetoothDevice) {
         _connectionState.postValue(ConnectionStatus.CONNECTING)
     }
-
     override fun onDeviceConnected(device: BluetoothDevice) {
         _connectionState.postValue(ConnectionStatus.CONNECTING)
     }
