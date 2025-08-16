@@ -450,30 +450,38 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
         Log.i(TAG, "Sending JSON to NUS TX: $jsonString")
 
         nusTxCharacteristic?.let { characteristic ->
-            //characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT // Or WRITE_TYPE_NO_RESPONSE
-            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            // For pre-Tiramisu, the writeType is set on the characteristic object itself.
+            // For Tiramisu+, it's an argument to the writeCharacteristic method.
+            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE // Set for pre-Tiramisu case
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                val result = bluetoothGatt!!.writeCharacteristic(characteristic, payloadBytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
-                Log.d(TAG, "writeCharacteristic (Tiramisu+) for NUS TX result: $result (0 is SUCCESS, 7 is GATT_WRITE_NOT_PERMITTED, 257 is GATT_FAILURE etc.)")
+                // Using WRITE_TYPE_NO_RESPONSE as the third argument here
+                val result = bluetoothGatt!!.writeCharacteristic(characteristic, payloadBytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+                Log.d(TAG, "writeCharacteristic (Tiramisu+) for NUS TX (using NO_RESPONSE) result: $result (0 is SUCCESS)")
                 if (result != BluetoothStatusCodes.SUCCESS) { // BluetoothStatusCodes.SUCCESS is 0
-                    Log.e(TAG, "Failed to initiate write characteristic (Tiramisu+): error $result")
+                    Log.e(TAG, "Failed to initiate write characteristic (Tiramisu+, NO_RESPONSE): error $result")
                     _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_json_send_failed_code, result.toString()))
                 } else {
-                    // Success is reported in onCharacteristicWrite
-                    Log.d(TAG, "Successfully initiated writeCharacteristic (Tiramisu+) for NUS TX.")
+                    // Success for NO_RESPONSE means the data was queued successfully.
+                    // There won't be an onCharacteristicWrite callback for WRITE_TYPE_NO_RESPONSE.
+                    Log.d(TAG, "Successfully initiated writeCharacteristic (Tiramisu+, NO_RESPONSE) for NUS TX.")
+                    // If you expect a response or want to confirm delivery, you might need WRITE_TYPE_DEFAULT
+                    // and ensure the peripheral acknowledges. But for now, let's see if NO_RESPONSE works.
                 }
             } else {
+                // Pre-Tiramisu path, characteristic.writeType set above is used.
                 @Suppress("DEPRECATION")
                 characteristic.value = payloadBytes
                 @Suppress("DEPRECATION")
                 val success = bluetoothGatt!!.writeCharacteristic(characteristic)
-                Log.d(TAG, "writeCharacteristic (pre-Tiramisu) for NUS TX initiated: $success")
+                Log.d(TAG, "writeCharacteristic (pre-Tiramisu, using NO_RESPONSE) for NUS TX initiated: $success")
                 if (!success) {
-                    Log.e(TAG, "Failed to initiate write characteristic (pre-Tiramisu)")
+                    Log.e(TAG, "Failed to initiate write characteristic (pre-Tiramisu, NO_RESPONSE)")
                     _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_json_send_failed))
                 } else {
-                    // Success is reported in onCharacteristicWrite
-                    Log.d(TAG, "Successfully initiated writeCharacteristic (pre-Tiramisu) for NUS TX.")
+                    // Similar to Tiramisu+, for NO_RESPONSE, success here means queued.
+                    // No onCharacteristicWrite callback.
+                    Log.d(TAG, "Successfully initiated writeCharacteristic (pre-Tiramisu, NO_RESPONSE) for NUS TX.")
                 }
             }
         }
