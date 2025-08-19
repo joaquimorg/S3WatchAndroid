@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
 import android.util.Log
+import android.os.PowerManager
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import kotlinx.coroutines.CoroutineScope
@@ -17,6 +18,7 @@ import org.joaquim.s3watch.ui.device.DeviceConnectionViewModel // For SharedPref
 // Removed: import org.joaquim.s3watch.ui.home.HomeViewModel.ConnectionStatus 
 import org.json.JSONObject
 import kotlin.math.min
+import kotlin.math.max
 import java.text.SimpleDateFormat
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -41,7 +43,9 @@ object BluetoothCentralManager {
     private val NUS_RX_CHARACTERISTIC_UUID = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e") // Receive from S3 (Notify)
     private val NUS_TX_CHARACTERISTIC_UUID = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e") // Send to S3 (Write)
     private val CCC_DESCRIPTOR_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb") // Client Characteristic Configuration Descriptor
-    private const val BLE_MTU = 128
+    private const val DEFAULT_ANDROID_MTU = 503 // includes 3-byte ATT header
+    private const val ATT_OVERHEAD = 3
+    private const val SEND_STATUS_DELAY_MS = 2000L // Delay after connection before sending status
 
     val INSTANCE: BluetoothCentralManager by lazy { this }
 
@@ -52,6 +56,7 @@ object BluetoothCentralManager {
     private var nusTxCharacteristic: BluetoothGattCharacteristic? = null
     private var nusRxCharacteristic: BluetoothGattCharacteristic? = null
     private val rxBuffer = StringBuilder()
+    private var negotiatedMtu: Int = DEFAULT_ANDROID_MTU
 
     // LiveData exposed to ViewModels
     private val _connectionState = MutableLiveData<ConnectionStatus>(ConnectionStatus.DISCONNECTED)
@@ -152,8 +157,8 @@ object BluetoothCentralManager {
         override fun onCharacteristicWrite(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?, status: Int) {
             if (characteristic?.uuid == NUS_TX_CHARACTERISTIC_UUID) {
                 if (status == BluetoothGatt.GATT_SUCCESS) {
-                    val data = characteristic.value?.toString(Charsets.UTF_8) ?: ""
-                    Log.i(TAG, "Data sent successfully via TX : $data")
+                    //val data = characteristic.value?.toString(Charsets.UTF_8) ?: ""
+                    Log.i(TAG, "Data sent successfully via TX")
                     // You could add a LiveData for send status if needed
                 } else {
                     Log.e(TAG, "Failed to write TX characteristic: $status")
@@ -194,7 +199,11 @@ object BluetoothCentralManager {
                     // Optionally send initial data like date/time
                     bluetoothGatt?.requestMtu(128)
                     sendDateTime()
-                    //sendStatus()
+                    // Send status shortly after initial datetime to let link settle
+                    coroutineScope.launch {
+                        delay(SEND_STATUS_DELAY_MS)
+                        sendStatus()
+                    }
                 } else {
                     Log.e(TAG, "Failed to enable RX notifications: $status.")
                     _lastErrorMessage.postValue("Failed to enable notifications: $status")
@@ -343,8 +352,13 @@ object BluetoothCentralManager {
      * Send a notification to the watch.
      */
     fun sendNotification(appId: String, title: String, message: String) {
+        val dateTimeString = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+        } else {
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault()).format(Date())
+        }
         val json = JSONObject().apply {
-            put("type", "notification")
+            put("notification", dateTimeString)
             put("app", appId)
             put("title", title)
             put("message", message)
@@ -365,38 +379,71 @@ object BluetoothCentralManager {
             return
         }
 
-        val payload = (jsonData + "\r\n").toByteArray(Charsets.UTF_8)
-        var offset = 0
-        while (offset < payload.size) {
-            val end = min(offset + BLE_MTU, payload.size)
-            val chunk = payload.copyOfRange(offset, end)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-
-                val writeStatus = bluetoothGatt!!.writeCharacteristic(
-                    nusTxCharacteristic!!,
-                    chunk,
-                    BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                )
-                if (writeStatus != BluetoothStatusCodes.SUCCESS) {
-                    Log.e(TAG, "Failed to write chunk: $writeStatus")
-                    _lastErrorMessage.postValue("Failed to send data: $writeStatus")
-                    return
-                }
-            } else {
-                // nusTxCharacteristic is checked for nullity at the start of the function
-                nusTxCharacteristic!!.value = chunk
-                nusTxCharacteristic!!.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                @Suppress("DEPRECATION")
-                val success = bluetoothGatt!!.writeCharacteristic(nusTxCharacteristic!!) // Use !! for safety, though checked
-                if (!success) {
-                    Log.e(TAG, "Failed to write chunk (legacy)")
-                    _lastErrorMessage.postValue("Failed to send data.")
-                    return
-                }
-            }
-            offset = end
+        // Keep CPU awake briefly so writes succeed while the phone is locked / dozing
+        val pm = applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "S3Watch:SendJson").apply {
+            setReferenceCounted(false)
         }
-        Log.i(TAG, "Sent JSON via TX: $jsonData")
+        try {
+            @Suppress("DEPRECATION")
+            wakeLock.acquire(10_000L)
+
+            val payload = (jsonData + "\n").toByteArray(Charsets.UTF_8)
+            var offset = 0
+            val maxChunk = max(20, negotiatedMtu - ATT_OVERHEAD)
+            val writeType = determineWriteType(nusTxCharacteristic)
+            while (offset < payload.size) {
+                val end = min(offset + maxChunk, payload.size)
+                val chunk = payload.copyOfRange(offset, end)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+
+                    val writeStatus = bluetoothGatt!!.writeCharacteristic(
+                        nusTxCharacteristic!!,
+                        chunk,
+                        writeType
+                    )
+                    if (writeStatus != BluetoothStatusCodes.SUCCESS) {
+                        Log.e(TAG, "Failed to write chunk: $writeStatus (mtu=$negotiatedMtu maxChunk=$maxChunk type=$writeType)")
+                        _lastErrorMessage.postValue("Failed to send data: $writeStatus")
+                        return
+                    }
+                } else {
+                    // nusTxCharacteristic is checked for nullity at the start of the function
+                    nusTxCharacteristic!!.value = chunk
+                    nusTxCharacteristic!!.writeType = writeType
+                    @Suppress("DEPRECATION")
+                    val success = bluetoothGatt!!.writeCharacteristic(nusTxCharacteristic!!) // Use !! for safety, though checked
+                    if (!success) {
+                        Log.e(TAG, "Failed to write chunk (legacy) (mtu=$negotiatedMtu maxChunk=$maxChunk type=$writeType)")
+                        _lastErrorMessage.postValue("Failed to send data.")
+                        return
+                    }
+                }
+                offset = end
+            }
+            Log.i(TAG, "Sent JSON via TX: $jsonData")
+        } finally {
+            try { if (wakeLock.isHeld) wakeLock.release() } catch (_: Throwable) {}
+        }
+
+        fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                negotiatedMtu = mtu
+                Log.i(TAG, "MTU negotiated: $mtu bytes")
+            } else {
+                Log.w(TAG, "MTU change failed with status=$status")
+            }
+        }
+    }
+
+    private fun determineWriteType(char: BluetoothGattCharacteristic?): Int {
+        if (char == null) return BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        val props = char.properties
+        return if ((props and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        } else {
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        }
     }
 
     fun disconnect() {

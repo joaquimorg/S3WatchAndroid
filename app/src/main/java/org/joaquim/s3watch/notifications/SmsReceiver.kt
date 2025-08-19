@@ -20,7 +20,7 @@ class SmsReceiver : BroadcastReceiver() {
                 val sms = SmsMessage.createFromPdu(pdu as ByteArray, format)
                 val from = sms.displayOriginatingAddress
                 val message = sms.messageBody
-                BluetoothCentralManager.sendNotification("sms", "SMS from $from", message)
+                BluetoothCentralManager.sendNotification("sms", "$from", message)
             }
         }
     }

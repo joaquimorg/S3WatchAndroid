@@ -141,6 +141,33 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun sendDemoNotificationToDevice() {
+        if (bluetoothManager.connectionState.value != BluetoothCentralManager.ConnectionStatus.CONNECTED) {
+            _text.postValue("Device not connected. Cannot send demo notification.")
+            return
+        }
+        val apps = listOf("demo.chat", "demo.mail", "demo.social", "demo.system")
+        val titles = listOf(
+            "New message",
+            "Reminder",
+            "Build finished",
+            "Low battery",
+            "Meeting in 10 min"
+        )
+        val messages = listOf(
+            "Hello from S3Watch demo!",
+            "Don’t forget to check your tasks.",
+            "All tests passed successfully.",
+            "Your package has shipped.",
+            "It’s time to stand and stretch."
+        )
+        val app = apps.random()
+        val title = titles.random()
+        val msg = messages.random()
+        bluetoothManager.sendNotification(app, title, msg)
+        _text.postValue("Sent demo notification: $title")
+    }
+
     override fun onCleared() {
         super.onCleared()
         bluetoothManager.connectionState.removeObserver(connectionStateObserver)

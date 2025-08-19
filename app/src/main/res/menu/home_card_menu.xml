@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/action_reconnect"
+        android:title="Reconnect" />
+    <item
+        android:id="@+id/action_send_datetime"
+        android:title="@string/button_send_datetime_text" />
+    <item
+        android:id="@+id/action_send_status"
+        android:title="@string/button_send_status_text" />
+    <item
+        android:id="@+id/action_send_demo_notification"
+        android:title="@string/button_send_demo_notification_text" />
+    
+    
+</menu>

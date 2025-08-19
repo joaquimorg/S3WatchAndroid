@@ -22,6 +22,7 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.application
 import org.joaquim.s3watch.R
 import org.joaquim.s3watch.utils.SingleLiveEvent
+import org.joaquim.s3watch.bluetooth.BluetoothCentralManager
 import org.json.JSONObject
 import java.time.LocalDateTime
 import java.util.*
@@ -66,13 +67,32 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
     private val _navigateToHome = SingleLiveEvent<Unit>()
     val navigateToHome: LiveData<Unit> = _navigateToHome
 
-    private var bluetoothGatt: BluetoothGatt? = null
-    private var nusTxCharacteristic: BluetoothGattCharacteristic? = null
-    private var nusRxCharacteristic: BluetoothGattCharacteristic? = null
+    // GATT state now lives in BluetoothCentralManager; keep only scan state here
 
     private val handler = Handler(Looper.getMainLooper())
 
     private val sharedPreferences = application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    init {
+        // Bridge central manager state into this VM for UI consumption
+        BluetoothCentralManager.connectionState.observeForever { state ->
+            when (state) {
+                BluetoothCentralManager.ConnectionStatus.CONNECTED -> {
+                    _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_connected))
+                    _navigateToHome.postValue(Unit)
+                }
+                BluetoothCentralManager.ConnectionStatus.CONNECTING -> {
+                    _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_connecting))
+                }
+                BluetoothCentralManager.ConnectionStatus.DISCONNECTED -> {
+                    _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_disconnected))
+                }
+                BluetoothCentralManager.ConnectionStatus.ERROR -> {
+                    _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_connection_error, "", ""))
+                }
+            }
+        }
+    }
 
 
     @SuppressLint("MissingPermission")
@@ -108,12 +128,9 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
-        val filters: MutableList<ScanFilter> = ArrayList()
-        val serviceUuid = ParcelUuid.fromString(NORDIC_UART_SERVICE_UUID_STRING)
-        val nordicUartFilter = ScanFilter.Builder().setServiceUuid(serviceUuid).build()
-        filters.add(nordicUartFilter)
-
-        Log.d(TAG, "Starting BLE scan with Nordic UART filter...")
+        // Show all nearby BLE devices (no service filter); some peripherals don't advertise NUS in scan data
+        val filters: List<ScanFilter>? = null
+        Log.d(TAG, "Starting BLE scan (no filter) ...")
         handler.postDelayed({
             if (_isScanning.value == true) {
                 stopScan()
@@ -159,13 +176,30 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
             if (!hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
                 Log.w(TAG, "BLUETOOTH_CONNECT permission missing in onScanResult, cannot get device name.")
             }
-            val device = result.device
+            val device = result.device ?: return
             val currentList = _discoveredDevices.value ?: mutableListOf()
-            // Ensure device name is not null before adding to avoid issues with unnamed devices.
-            if (device != null && device.name != null && !currentList.any { it.address == device.address }) {
+            // Add device even if name is null; show address or Unknown in UI
+            if (!currentList.any { it.address == device.address }) {
                 currentList.add(device)
                 _discoveredDevices.postValue(currentList)
-                Log.i(TAG, "Device found: ${device.name} (${device.address})")
+                Log.i(TAG, "Device found: ${device.name ?: "(no name)"} (${device.address})")
+            }
+        }
+
+        override fun onBatchScanResults(results: MutableList<ScanResult>) {
+            super.onBatchScanResults(results)
+            val currentList = _discoveredDevices.value ?: mutableListOf()
+            var changed = false
+            results.forEach { res ->
+                val dev = res.device ?: return@forEach
+                if (!currentList.any { it.address == dev.address }) {
+                    currentList.add(dev)
+                    changed = true
+                }
+            }
+            if (changed) {
+                _discoveredDevices.postValue(currentList)
+                Log.d(TAG, "Batch results merged. Total: ${currentList.size}")
             }
         }
 
@@ -184,20 +218,15 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
             Log.w(TAG, "BLUETOOTH_CONNECT permission not granted for connectGatt")
             return
         }
-        stopScan() // Stop scanning before connecting
-        _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_connecting_to, device.name ?: device.address))
-        Log.i(TAG, "Connecting to ${device.name ?: device.address}")
-        try {
-            // Close any existing GATT connection first
-            bluetoothGatt?.close()
-            bluetoothGatt = null
-            bluetoothGatt = device.connectGatt(getApplication(), false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-        } catch (e: SecurityException) {
-            Log.e(TAG, "SecurityException during connectGatt: ${e.message}")
-            _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_ble_connect_permission_error))
-        }
+        stopScan()
+        val nameOrAddress = device.name ?: device.address
+        _connectionStatus.postValue(getApplication<Application>().getString(R.string.status_connecting_to, nameOrAddress))
+        Log.i(TAG, "Delegating connection to central manager: $nameOrAddress")
+        // Delegate connection to the central manager (single source of truth)
+        BluetoothCentralManager.connect(device.address, device.name)
     }
 
+    /* Legacy per-ViewModel GATT stack kept for reference; replaced by BluetoothCentralManager
     private val gattCallback: BluetoothGattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
@@ -288,6 +317,7 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
                         Log.d(TAG, "Notifications enabled, attempting to send current date/time.")
                         sendCurrentDateTime() // This uses WRITE_TYPE_NO_RESPONSE
                         // Since sendCurrentDateTime is fire-and-forget, navigate immediately after queuing the send.
+
                         Log.d(TAG, "Navigating to home screen after attempting to send date/time.")
                         _navigateToHome.postValue(Unit)
                     } else {
@@ -490,31 +520,10 @@ class DeviceConnectionViewModel(application: Application) : AndroidViewModel(app
 
     @SuppressLint("MissingPermission")
     fun closeGatt() {
-        if (bluetoothGatt != null) {
-            if (hasPermission(Manifest.permission.BLUETOOTH_CONNECT)) {
-                try {
-                    Log.d(TAG, "Attempting to disconnect GATT.")
-                    bluetoothGatt?.disconnect() // Request disconnection
-                    // The actual close should ideally happen after onConnectionStateChange reflects STATE_DISCONNECTED,
-                    // but for simplicity and to ensure resources are freed, we close here.
-                    // This might sometimes abort pending operations if not careful.
-                    Log.d(TAG, "Attempting to close GATT client.")
-                    bluetoothGatt?.close()
-                    Log.i(TAG, "GATT client disconnected and closed invoked.")
-                } catch (e: SecurityException) {
-                    Log.e(TAG, "SecurityException during closeGatt: ${e.message}")
-                }
-            } else {
-                Log.w(TAG, "BLUETOOTH_CONNECT permission missing, cannot fully close GATT.")
-            }
-            bluetoothGatt = null
-            nusTxCharacteristic = null
-            nusRxCharacteristic = null
-            // Reset status if needed, or let the UI decide based on current connection state
-        } else {
-            Log.d(TAG, "closeGatt called but bluetoothGatt is already null.")
-        }
+        // Delegate disconnection to the central manager
+        BluetoothCentralManager.disconnect()
     }
+    */
 
     private fun hasPermission(permission: String): Boolean {
         return ActivityCompat.checkSelfPermission(

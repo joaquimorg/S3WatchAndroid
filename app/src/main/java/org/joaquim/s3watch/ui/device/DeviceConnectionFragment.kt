@@ -88,6 +88,18 @@ class DeviceConnectionFragment : Fragment() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Auto-start scan when screen opens
+        checkAndRequestPermissions()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // Stop scan when leaving screen
+        viewModel.stopScan()
+    }
+
     private fun setupRecyclerView() {
         deviceListAdapter = BluetoothDeviceListAdapter { device ->
             viewModel.stopScan() // Parar o scan antes de tentar conectar
@@ -107,7 +119,7 @@ class DeviceConnectionFragment : Fragment() {
 
         viewModel.isScanning.observe(viewLifecycleOwner) { isScanning ->
             binding.scanButton.text = if (isScanning) getString(R.string.stop_scan) else getString(R.string.scan_devices)
-            //binding.progressBar.visibility = if (isScanning) View.VISIBLE else View.GONE
+            binding.scanProgress.visibility = if (isScanning) View.VISIBLE else View.GONE
         }
 
         viewModel.connectionStatus.observe(viewLifecycleOwner) { status ->

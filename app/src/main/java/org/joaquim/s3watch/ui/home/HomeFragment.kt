@@ -6,6 +6,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.fragment.app.Fragment
+import android.widget.PopupMenu
 import androidx.fragment.app.viewModels
 import org.joaquim.s3watch.R // Import R for string resources
 import org.joaquim.s3watch.bluetooth.BluetoothCentralManager // Added import
@@ -29,16 +30,11 @@ class HomeFragment : Fragment() {
 
         // Observe LiveData from HomeViewModel
         homeViewModel.text.observe(viewLifecycleOwner) { statusText ->
-            binding.textHome.text = statusText // Main status text (e.g., "Conectado a: S3Watch")
+            // Keep for potential subtitle use if needed in future
         }
 
         homeViewModel.connectedDeviceName.observe(viewLifecycleOwner) { name ->
-            if (name != null) {
-                binding.textDeviceName.text = getString(R.string.home_device_name_prefix, name)
-                binding.textDeviceName.visibility = View.VISIBLE
-            } else {
-                binding.textDeviceName.visibility = View.GONE
-            }
+            binding.titleDeviceName.text = name ?: getString(R.string.home_no_device_connected)
         }
 
         homeViewModel.connectionState.observe(viewLifecycleOwner) { state ->
@@ -47,34 +43,37 @@ class HomeFragment : Fragment() {
                 BluetoothCentralManager.ConnectionStatus.DISCONNECTED -> getString(R.string.status_disconnected)
                 BluetoothCentralManager.ConnectionStatus.CONNECTING -> getString(R.string.status_connecting)
                 BluetoothCentralManager.ConnectionStatus.ERROR -> getString(R.string.status_error)
-                else -> getString(R.string.status_unknown) // Covers null or any other state
+                else -> getString(R.string.status_unknown)
             }
-            binding.textConnectionStatus.text = getString(R.string.home_connection_status_prefix, statusString)
+            binding.subtitleConnection.text = statusString
         }
 
-        homeViewModel.reconnectButtonText.observe(viewLifecycleOwner) { stringResId ->
-            binding.buttonReconnect.setText(stringResId)
-        }
+        // Reconnect label is applied dynamically to the popup menu when it opens
 
         homeViewModel.deviceData.observe(viewLifecycleOwner) { deviceData ->
             deviceData?.let {
-                binding.textBattery.text = getString(R.string.battery_level_prefix, it.battery)
-                binding.textCharging.text = getString(R.string.charging_status_prefix, it.charging.toString())
-                binding.textSteps.text = getString(R.string.steps_count_prefix, it.steps)
+                val batt = "🔋 ${it.battery}%" + if (it.charging) " (charging)" else ""
+                binding.metricBattery.text = batt
+                binding.metricSteps.text = "👣 ${it.steps}"
             }
         }
 
-        // Set up button listeners
-        binding.buttonReconnect.setOnClickListener {
-            homeViewModel.handleReconnectButtonClick()
-        }
-
-        binding.buttonSendDatetime.setOnClickListener {
-            homeViewModel.sendDateTimeToDevice()
-        }
-
-        binding.buttonSendStatus.setOnClickListener {
-            homeViewModel.sendStatusToDevice()
+        // Overflow menu on the card
+        binding.buttonCardMenu.setOnClickListener { v ->
+            val popup = PopupMenu(requireContext(), v)
+            popup.menuInflater.inflate(R.menu.home_card_menu, popup.menu)
+            val reconnectTitle = getString(homeViewModel.reconnectButtonText.value ?: R.string.button_reconnect_text)
+            popup.menu.findItem(R.id.action_reconnect).title = reconnectTitle
+            popup.setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    R.id.action_reconnect -> homeViewModel.handleReconnectButtonClick()
+                    R.id.action_send_datetime -> homeViewModel.sendDateTimeToDevice()
+                    R.id.action_send_status -> homeViewModel.sendStatusToDevice()
+                    R.id.action_send_demo_notification -> homeViewModel.sendDemoNotificationToDevice()
+                }
+                true
+            }
+            popup.show()
         }
 
         return root

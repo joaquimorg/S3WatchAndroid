@@ -36,6 +36,8 @@ class NotificationSettingsFragment : PreferenceFragmentCompat() {
     private lateinit var appsCategory: PreferenceCategory
     private lateinit var permissionCategory: PreferenceCategory
     private lateinit var notifAccessSwitch: SwitchPreferenceCompat
+    private lateinit var notifPermissionSwitch: SwitchPreferenceCompat
+    private lateinit var batteryOptSwitch: SwitchPreferenceCompat
     private var allApps: List<AppItem> = emptyList()
     private var currentFilter: String = ""
     private var showSystemApps: Boolean = false
@@ -71,6 +73,32 @@ class NotificationSettingsFragment : PreferenceFragmentCompat() {
             }
         }
         permissionCategory.addPreference(notifAccessSwitch)
+
+        // Post notifications runtime permission (Android 13+)
+        notifPermissionSwitch = SwitchPreferenceCompat(requireContext()).apply {
+            key = "post_notifications_perm"
+            title = getString(org.joaquim.s3watch.R.string.post_notifications_title)
+            summary = getString(org.joaquim.s3watch.R.string.post_notifications_summary)
+            isChecked = isPostNotificationsGranted()
+            setOnPreferenceChangeListener { _, _ ->
+                requestPostNotifications()
+                false
+            }
+        }
+        permissionCategory.addPreference(notifPermissionSwitch)
+
+        // Battery optimization exemption
+        batteryOptSwitch = SwitchPreferenceCompat(requireContext()).apply {
+            key = "battery_optimization"
+            title = getString(org.joaquim.s3watch.R.string.battery_optimization_title)
+            summary = getString(org.joaquim.s3watch.R.string.battery_optimization_summary)
+            isChecked = isIgnoringBatteryOptimizations()
+            setOnPreferenceChangeListener { _, _ ->
+                requestIgnoreBatteryOptimizations()
+                false
+            }
+        }
+        permissionCategory.addPreference(batteryOptSwitch)
 
         // Inline search bar preference
         val searchPref = object : Preference(requireContext()) {
@@ -149,6 +177,53 @@ class NotificationSettingsFragment : PreferenceFragmentCompat() {
                 rebuildAppChecklist(currentFilter)
             }
         }.start()
+    }
+
+    // Merged into existing onResume at bottom of file
+
+    private fun isPostNotificationsGranted(): Boolean {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                androidx.core.content.ContextCompat.checkSelfPermission(
+                    requireContext(), android.Manifest.permission.POST_NOTIFICATIONS
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            } else {
+                // Some vendor builds route this through SystemUI and may throw SecurityException
+                androidx.core.app.NotificationManagerCompat.from(requireContext()).areNotificationsEnabled()
+            }
+        } catch (t: Throwable) {
+            // Fail open to avoid crashing on buggy implementations
+            true
+        }
+    }
+
+    private fun requestPostNotifications() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
+        } else {
+            try {
+                val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, requireContext().packageName)
+                }
+                startActivity(intent)
+            } catch (_: Exception) { }
+        }
+    }
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        return try {
+            val pm = requireContext().getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+            pm.isIgnoringBatteryOptimizations(requireContext().packageName)
+        } catch (_: Exception) { false }
+    }
+
+    private fun requestIgnoreBatteryOptimizations() {
+        try {
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = android.net.Uri.parse("package:" + requireContext().packageName)
+            }
+            startActivity(intent)
+        } catch (_: Exception) { }
     }
 
     companion object {
@@ -285,9 +360,20 @@ class NotificationSettingsFragment : PreferenceFragmentCompat() {
         if (::notifAccessSwitch.isInitialized) {
             notifAccessSwitch.isChecked = isNotificationAccessGranted()
         }
+        if (::notifPermissionSwitch.isInitialized) {
+            notifPermissionSwitch.isChecked = isPostNotificationsGranted()
+        }
+        if (::batteryOptSwitch.isInitialized) {
+            batteryOptSwitch.isChecked = isIgnoringBatteryOptimizations()
+        }
     }
 
     private fun isNotificationAccessGranted(): Boolean {
-        return NotificationManagerCompat.getEnabledListenerPackages(requireContext()).contains(requireContext().packageName)
+        return try {
+            NotificationManagerCompat.getEnabledListenerPackages(requireContext()).contains(requireContext().packageName)
+        } catch (t: Throwable) {
+            // Fail closed here; user can still toggle the switch to open settings
+            false
+        }
     }
 }
