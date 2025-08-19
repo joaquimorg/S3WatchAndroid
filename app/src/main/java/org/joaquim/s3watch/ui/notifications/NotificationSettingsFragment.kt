@@ -1,43 +1,37 @@
 package org.joaquim.s3watch.ui.notifications
 
 import android.os.Bundle
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
-import android.widget.TextView
-import androidx.fragment.app.Fragment
-import androidx.lifecycle.ViewModelProvider
-import org.joaquim.s3watch.databinding.FragmentNotificationSettingsBinding
+import androidx.preference.MultiSelectListPreference
+import androidx.preference.PreferenceFragmentCompat
 
-class NotificationSettingsFragment : Fragment() {
+/**
+ * Fragment showing notification settings.
+ * Allows the user to choose which applications will have their
+ * notifications forwarded to the connected watch.
+ */
+class NotificationSettingsFragment : PreferenceFragmentCompat() {
+    override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
+        // Create an empty screen and add the multi-select list dynamically
+        preferenceScreen = preferenceManager.createPreferenceScreen(requireContext())
 
-    private var _binding: FragmentNotificationSettingsBinding? = null
+        val pm = requireContext().packageManager
+        val apps = pm.getInstalledApplications(0).sortedBy { it.loadLabel(pm).toString() }
 
-    // This property is only valid between onCreateView and
-    // onDestroyView.
-    private val binding get() = _binding!!
+        val entries = apps.map { it.loadLabel(pm).toString() }.toTypedArray()
+        val entryValues = apps.map { it.packageName }.toTypedArray()
 
-    override fun onCreateView(
-        inflater: LayoutInflater,
-        container: ViewGroup?,
-        savedInstanceState: Bundle?
-    ): View {
-        val notificationSettingsViewModel =
-            ViewModelProvider(this).get(NotificationSettingsViewModel::class.java)
-
-        _binding = FragmentNotificationSettingsBinding.inflate(inflater, container, false)
-        val root: View = binding.root
-
-        // TODO: Update the TextView ID in fragment_notification_settings.xml if necessary
-        val textView: TextView = binding.textNotifications
-        notificationSettingsViewModel.text.observe(viewLifecycleOwner) {
-            textView.text = it
+        val appPref = MultiSelectListPreference(requireContext()).apply {
+            key = KEY_NOTIFICATION_APPS
+            title = getString(org.joaquim.s3watch.R.string.select_notification_apps)
+            this.entries = entries
+            this.entryValues = entryValues
         }
-        return root
+
+        preferenceScreen.addPreference(appPref)
     }
 
-    override fun onDestroyView() {
-        super.onDestroyView()
-        _binding = null
+    companion object {
+        const val KEY_NOTIFICATION_APPS = "notification_apps"
     }
 }
+
