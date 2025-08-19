@@ -36,6 +36,8 @@
     <string name="status_nus_rx_cccd_write_fail">NUS RZ CCCD write fail</string>
     <string name="status_nus_rx_enable_failed_status">NUS RX enable failed %1$s</string>
 
+    <string name="select_notification_apps">Select apps for notifications</string>
+
     <!-- Novas strings para HomeFragment -->
     <string name="home_device_name_prefix">Smartwatch: %1$s</string>
     <string name="home_connection_status_prefix">Status %1$s</string>

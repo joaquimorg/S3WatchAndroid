@@ -339,6 +339,19 @@ object BluetoothCentralManager {
         sendJson(jsonData)
     }
 
+    /**
+     * Send a notification to the watch.
+     */
+    fun sendNotification(appId: String, title: String, message: String) {
+        val json = JSONObject().apply {
+            put("type", "notification")
+            put("app", appId)
+            put("title", title)
+            put("message", message)
+        }
+        sendJson(json.toString())
+    }
+
     fun sendJson(jsonData: String) {
         if (applicationContext.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != android.content.pm.PackageManager.PERMISSION_GRANTED && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
              Log.e(TAG, "BLUETOOTH_CONNECT permission not granted for sendJson.")
