@@ -37,6 +37,13 @@
     <string name="status_nus_rx_enable_failed_status">NUS RX enable failed %1$s</string>
 
     <string name="select_notification_apps">Select apps for notifications</string>
+    <string name="search_apps">Search apps</string>
+    <string name="loading_apps">Loading apps…</string>
+    <string name="show_system_apps">Show system apps</string>
+    <string name="show_system_apps_summary">Include pre-installed/system apps in the list</string>
+    <string name="permissions_title">Permissions</string>
+    <string name="notification_access_title">Notification access</string>
+    <string name="notification_access_summary">Allow S3Watch to read notifications. Tap to open settings.</string>
 
     <!-- Novas strings para HomeFragment -->
     <string name="home_device_name_prefix">Smartwatch: %1$s</string>
