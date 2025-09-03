@@ -19,6 +19,7 @@ import org.joaquim.s3watch.ui.device.DeviceConnectionViewModel // For SharedPref
 import org.json.JSONObject
 import kotlin.math.min
 import kotlin.math.max
+import kotlin.jvm.Volatile
 import java.text.SimpleDateFormat
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -57,6 +58,13 @@ object BluetoothCentralManager {
     private var nusRxCharacteristic: BluetoothGattCharacteristic? = null
     private val rxBuffer = StringBuilder()
     private var negotiatedMtu: Int = DEFAULT_ANDROID_MTU
+    private const val PENDING_MSG_TTL_MS = 60_000L // 1 minute TTL for queued messages
+
+    // Pending outbound messages while disconnected
+    private data class PendingMessage(val payload: String, val createdAt: Long)
+    private val pendingQueue: ArrayDeque<PendingMessage> = ArrayDeque()
+
+    @Volatile private var suppressAutoReconnect: Boolean = false
 
     // LiveData exposed to ViewModels
     private val _connectionState = MutableLiveData<ConnectionStatus>(ConnectionStatus.DISCONNECTED)
@@ -196,14 +204,9 @@ object BluetoothCentralManager {
                     Log.i(TAG, "RX notifications enabled successfully.")
                     _connectionState.postValue(ConnectionStatus.CONNECTED) // Now fully connected
                     _lastErrorMessage.postValue(null) // Clear any previous error
-                    // Optionally send initial data like date/time
+                    // Negotiate MTU and flush any pending messages queued while disconnected
                     bluetoothGatt?.requestMtu(128)
-                    sendDateTime()
-                    // Send status shortly after initial datetime to let link settle
-                    coroutineScope.launch {
-                        delay(SEND_STATUS_DELAY_MS)
-                        sendStatus()
-                    }
+                    coroutineScope.launch { flushPendingQueue() }
                 } else {
                     Log.e(TAG, "Failed to enable RX notifications: $status.")
                     _lastErrorMessage.postValue("Failed to enable notifications: $status")
@@ -219,10 +222,51 @@ object BluetoothCentralManager {
         var newlineIndex = rxBuffer.indexOf("\n")
         while (newlineIndex != -1) {
             val line = rxBuffer.substring(0, newlineIndex).replace("\r", "")
+            tryHandleDeviceRequest(line)
             _dataReceived.postValue(line)
             rxBuffer.delete(0, newlineIndex + 1)
             newlineIndex = rxBuffer.indexOf("\n")
         }
+    }
+
+    private fun tryHandleDeviceRequest(line: String) {
+        try {
+            val obj = JSONObject(line)
+            val request = obj.optString("request", "").lowercase(Locale.ROOT)
+            val get = obj.optString("get", "").lowercase(Locale.ROOT)
+            val cmd = obj.optString("cmd", "").lowercase(Locale.ROOT)
+            val reqDatetime = obj.optBoolean("request_datetime", false)
+            val event = obj.optString("event", "").lowercase(Locale.ROOT)
+            val state = obj.optString("state", "").lowercase(Locale.ROOT)
+
+            val wantsDateTime = request == "datetime" || request == "time" ||
+                    get == "datetime" || get == "time" ||
+                    cmd == "get_datetime" || cmd == "get_time" || cmd == "time_sync" ||
+                    reqDatetime
+
+            if (wantsDateTime) {
+                Log.i(TAG, "Device requested datetime; responding.")
+                sendDateTime()
+                sendAck("datetime")
+            }
+
+            // Interpret remote-controlled disconnect/power-save hints
+            val remoteDisconnect = request == "disconnect" || cmd == "disconnect" ||
+                    event == "disconnecting" || state == "sleep" || state == "power_save"
+            if (remoteDisconnect) {
+                Log.i(TAG, "Device indicated disconnect/sleep; suppressing auto-reconnect.")
+                suppressAutoReconnect = true
+            }
+        } catch (_: Exception) {
+            // Ignore non-JSON or unexpected payloads
+        }
+    }
+
+    private fun sendAck(event: String) {
+        try {
+            val obj = JSONObject().apply { put("ack", event) }
+            sendJson(obj.toString())
+        } catch (_: Exception) { }
     }
 
     private fun enableNotifications(characteristic: BluetoothGattCharacteristic) {
@@ -372,13 +416,71 @@ object BluetoothCentralManager {
             _lastErrorMessage.postValue("BLUETOOTH_CONNECT permission needed.")
             return
         }
-
         if (_connectionState.value != ConnectionStatus.CONNECTED || nusTxCharacteristic == null || bluetoothGatt == null) {
-            _lastErrorMessage.postValue("Not connected or TX characteristic unavailable.")
-            Log.w(TAG, "Cannot send JSON: Not connected or TX unavailable.")
+            // Queue for later instead of failing
+            enqueuePending(jsonData)
+            Log.i(TAG, "Queued JSON for later (disconnected): $jsonData")
             return
         }
 
+        sendJsonInternal(jsonData)
+        
+        fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                negotiatedMtu = mtu
+                Log.i(TAG, "MTU negotiated: $mtu bytes")
+            } else {
+                Log.w(TAG, "MTU change failed with status=$status")
+            }
+        }
+    }
+
+    private fun enqueuePending(jsonData: String) {
+        val now = System.currentTimeMillis()
+        synchronized(pendingQueue) {
+            dropExpiredLocked(now)
+            pendingQueue.addLast(PendingMessage(jsonData, now))
+        }
+        // If not connected or connecting, attempt to reconnect to deliver pending data
+        if (!isConnectingOrConnected()) {
+            reconnect()
+        }
+    }
+
+    private fun dropExpiredLocked(now: Long) {
+        while (pendingQueue.isNotEmpty()) {
+            val head = pendingQueue.first()
+            if (now - head.createdAt > PENDING_MSG_TTL_MS) {
+                pendingQueue.removeFirst()
+            } else {
+                break
+            }
+        }
+    }
+
+    private suspend fun flushPendingQueue() {
+        while (true) {
+            val next: PendingMessage? = synchronized(pendingQueue) {
+                dropExpiredLocked(System.currentTimeMillis())
+                pendingQueue.firstOrNull()
+            }
+            if (next == null) return
+
+            if (_connectionState.value != ConnectionStatus.CONNECTED || nusTxCharacteristic == null || bluetoothGatt == null) return
+
+            sendJsonInternal(next.payload)
+            synchronized(pendingQueue) {
+                if (pendingQueue.isNotEmpty() && pendingQueue.first() === next) {
+                    pendingQueue.removeFirst()
+                } else if (pendingQueue.isNotEmpty()) {
+                    pendingQueue.removeFirst()
+                }
+            }
+            delay(10)
+        }
+    }
+
+    private fun sendJsonInternal(jsonData: String) {
         // Keep CPU awake briefly so writes succeed while the phone is locked / dozing
         val pm = applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
         val wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "S3Watch:SendJson").apply {
@@ -408,11 +510,10 @@ object BluetoothCentralManager {
                         return
                     }
                 } else {
-                    // nusTxCharacteristic is checked for nullity at the start of the function
                     nusTxCharacteristic!!.value = chunk
                     nusTxCharacteristic!!.writeType = writeType
                     @Suppress("DEPRECATION")
-                    val success = bluetoothGatt!!.writeCharacteristic(nusTxCharacteristic!!) // Use !! for safety, though checked
+                    val success = bluetoothGatt!!.writeCharacteristic(nusTxCharacteristic!!)
                     if (!success) {
                         Log.e(TAG, "Failed to write chunk (legacy) (mtu=$negotiatedMtu maxChunk=$maxChunk type=$writeType)")
                         _lastErrorMessage.postValue("Failed to send data.")
@@ -425,16 +526,17 @@ object BluetoothCentralManager {
         } finally {
             try { if (wakeLock.isHeld) wakeLock.release() } catch (_: Throwable) {}
         }
-
-        fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                negotiatedMtu = mtu
-                Log.i(TAG, "MTU negotiated: $mtu bytes")
-            } else {
-                Log.w(TAG, "MTU change failed with status=$status")
-            }
-        }
     }
+
+    private fun isConnectingOrConnected(): Boolean {
+        return _connectionState.value == ConnectionStatus.CONNECTED || _connectionState.value == ConnectionStatus.CONNECTING
+    }
+
+    fun shouldAutoReconnect(): Boolean = !suppressAutoReconnect
+
+    fun hasPendingToSend(): Boolean = synchronized(pendingQueue) { pendingQueue.isNotEmpty() }
+
+    fun clearReconnectSuppression() { suppressAutoReconnect = false }
 
     private fun determineWriteType(char: BluetoothGattCharacteristic?): Int {
         if (char == null) return BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT

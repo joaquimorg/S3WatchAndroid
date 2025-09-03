@@ -54,7 +54,15 @@ class BleForegroundService : Service() {
         when (state) {
             BluetoothCentralManager.ConnectionStatus.CONNECTED -> cancelReconnectJob()
             BluetoothCentralManager.ConnectionStatus.DISCONNECTED,
-            BluetoothCentralManager.ConnectionStatus.ERROR -> scheduleReconnectWindow()
+            BluetoothCentralManager.ConnectionStatus.ERROR -> {
+                if (BluetoothCentralManager.shouldAutoReconnect() || BluetoothCentralManager.hasPendingToSend()) {
+                    scheduleReconnectWindow()
+                } else {
+                    // No reconnect if remote indicated intentional disconnect
+                    cancelReconnectJob()
+                    updateStatusNotification("Idle (remote off)")
+                }
+            }
             BluetoothCentralManager.ConnectionStatus.CONNECTING -> { /* no-op */ }
         }
     }
@@ -111,12 +119,15 @@ class BleForegroundService : Service() {
             val intervalMs = 15 * 1000L // try every 15 seconds
 
             while (isActive && System.currentTimeMillis() - start < timeoutMs) {
+                if (!BluetoothCentralManager.shouldAutoReconnect() && !BluetoothCentralManager.hasPendingToSend()) {
+                    // Stop trying if remote requested no auto-reconnect and nothing to send
+                    updateStatusNotification("Idle (remote off)")
+                    break
+                }
                 BluetoothCentralManager.reconnect()
                 // Update ongoing notification text so users know what's happening
                 val elapsed = (System.currentTimeMillis() - start) / 1000
-                val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                currentStatusText = "Reconnecting… ${elapsed}s"
-                nm.notify(NOTIFICATION_ID, buildNotification(currentStatusText))
+                updateStatusNotification("Reconnecting… ${elapsed}s")
                 delay(intervalMs)
             }
         }
@@ -127,8 +138,12 @@ class BleForegroundService : Service() {
         reconnectJob = null
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (_: Throwable) {}
         // Update notification to connected state
+        updateStatusNotification("Connected")
+    }
+
+    private fun updateStatusNotification(text: String) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        currentStatusText = "Connected"
+        currentStatusText = text
         nm.notify(NOTIFICATION_ID, buildNotification(currentStatusText))
     }
 
