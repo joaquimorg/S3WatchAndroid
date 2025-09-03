@@ -146,7 +146,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             _text.postValue("Device not connected. Cannot send demo notification.")
             return
         }
-        val apps = listOf("demo.chat", "demo.mail", "demo.social", "demo.system")
+        val apps = listOf("com.android.messaging", "com.whatsapp", "com.google.android.gm", "com.zhiliaoapp.musically")
         val titles = listOf(
             "New message",
             "Reminder",
@@ -155,7 +155,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             "Meeting in 10 min"
         )
         val messages = listOf(
-            "Hello from S3Watch demo!",
+            "Hello from S3Watch 😀 demo!",
             "Don’t forget to check your tasks.",
             "All tests passed successfully.",
             "Your package has shipped.",
